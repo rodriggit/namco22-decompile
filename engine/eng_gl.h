@@ -6,7 +6,9 @@
 #ifdef _WIN32
 #include <windows.h>
 #endif
+#if !defined(__WII__) && !defined(__wii__)
 #include <GL/gl.h>
+#endif
 #ifndef GL_CLAMP_TO_EDGE
 #define GL_CLAMP_TO_EDGE 0x812F
 #endif

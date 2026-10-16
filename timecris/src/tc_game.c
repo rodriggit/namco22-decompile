@@ -69,11 +69,11 @@ static const ss22_board_cfg tc_board = { "TC", 0xFFFF, 0, tc_load_program, tc_lo
 #define IN_TRIGGER 0x0010
 #define IN_PEDAL   0x0020
 static const ss22_action actions[] = {
-    { "Insert coin",  "coin",    SDL_SCANCODE_5,      SDL_SCANCODE_6,       IN_COIN,    0, SS22_PAD(SDL_CONTROLLER_BUTTON_BACK) },
-    { "Gun trigger",  "trigger", SDL_SCANCODE_SPACE,  SDL_SCANCODE_RETURN,  IN_TRIGGER, 0, SS22_PAD(SDL_CONTROLLER_BUTTON_A) | SS22_PAD(SDL_CONTROLLER_BUTTON_RIGHTSHOULDER), SDL_BUTTON_LMASK },
-    { "Foot pedal",   "pedal",   SDL_SCANCODE_Z,      SDL_SCANCODE_X,       IN_PEDAL,   0, SS22_PAD(SDL_CONTROLLER_BUTTON_B) | SS22_PAD(SDL_CONTROLLER_BUTTON_LEFTSHOULDER), SDL_BUTTON_RMASK | SDL_BUTTON_MMASK },
-    { "Service",      "service", SDL_SCANCODE_9,      SDL_SCANCODE_UNKNOWN, IN_SERVICE, 0, 0 },
-    { "Test",         "test",    SDL_SCANCODE_F2,     SDL_SCANCODE_UNKNOWN, IN_TEST,    0, 0 },
+    { "Insert coin",  "coin",    SS22_KEY_5,          SS22_KEY_6,          IN_COIN,    0, SS22_PAD(SS22_BUTTON_BACK) },
+    { "Gun trigger",  "trigger", SS22_KEY_SPACE,      SS22_KEY_RETURN,     IN_TRIGGER, 0, SS22_PAD(SS22_BUTTON_A) | SS22_PAD(SS22_BUTTON_RIGHTSHOULDER), SS22_MOUSE_LMASK },
+    { "Foot pedal",   "pedal",   SS22_KEY_Z,          SS22_KEY_X,          IN_PEDAL,   0, SS22_PAD(SS22_BUTTON_B) | SS22_PAD(SS22_BUTTON_LEFTSHOULDER), SS22_MOUSE_RMASK | SS22_MOUSE_MMASK },
+    { "Service",      "service", SS22_KEY_9,          SDL_SCANCODE_UNKNOWN, IN_SERVICE, 0, 0 },
+    { "Test",         "test",    SS22_KEY_F2,         SDL_SCANCODE_UNKNOWN, IN_TEST,    0, 0 },
 };
 static const ss22_input_game input = {
     actions, (int)(sizeof actions / sizeof *actions),

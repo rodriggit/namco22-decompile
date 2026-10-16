@@ -45,7 +45,9 @@ bool ss22_host_open(const ss22_host_game *g, int scale, bool fs)
 {
     (void)scale; (void)fs;
     game = g;
-    wii_port_init();
+    if (!wii_port_is_ready()) {
+        wii_port_init();
+    }
     {
         const wii_platform_config cfg = {
             .width = 640,
@@ -93,6 +95,7 @@ bool ss22_host_pointer(float *nx, float *ny, bool *inside)
 bool ss22_host_frame(void)
 {
     static uint16_t frame_buffer[640 * 480];
+    static int16_t audio_buffer[2048] = {0};
     static wii_platform_frame frame = {
         .width = 640,
         .height = 480,
@@ -102,6 +105,7 @@ bool ss22_host_frame(void)
     };
 
     wii_port_poll_input(&wii_input);
+    wii_port_submit_audio(audio_buffer, sizeof(audio_buffer) / sizeof(audio_buffer[0]));
     wii_port_submit_frame(&frame);
     return true;
 }

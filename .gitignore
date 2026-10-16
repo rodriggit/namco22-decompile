@@ -5,6 +5,7 @@
 
 # Made by the build or the game.
 /build/
+/build-wii/
 /build-win/
 /gen/
 windows-release/

@@ -32,6 +32,12 @@ typedef struct wii_platform_input {
     bool trigger;
     bool pedal;
     bool offscreen;
+    /*
+     * Wii pointer coordinates are expressed in the host's native screen-space
+     * convention so the rest of the game does not need to know about IR
+     * resolution or Wii coordinate quirks. The backend keeps this translation
+     * internal to the platform layer.
+     */
     uint16_t gun_x;
     uint16_t gun_y;
     int16_t stick_x;
@@ -83,6 +89,7 @@ typedef struct wii_platform_audio {
 
 void wii_port_init(void);
 void wii_port_shutdown(void);
+bool wii_port_is_ready(void);
 void wii_port_configure(const wii_platform_config *config);
 void wii_port_setup_audio(const wii_platform_audio *audio);
 void wii_port_poll_input(wii_platform_input *input);

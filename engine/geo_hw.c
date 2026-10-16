@@ -41,6 +41,13 @@
 #include <stdio.h>
 #include "eng.h"
 #include "geo_hw.h"
+
+#if defined(__SIZEOF_INT128__)
+#define NAMCO22_HAS_INT128 1
+#else
+#define NAMCO22_HAS_INT128 0
+#endif
+
 int g_objlog_on;                                   /* ENG_OBJLOG: set by slave_list.c while it logs an object; here because every game links geo_hw.c (a weak extern fails to link on Windows) */
 
 /* ---- point data ----------------------------------------------------------
@@ -78,13 +85,21 @@ static inline int64_t fshr64(int64_t v, int n) { return v >> n; }
  * defines sdiv with C semantics); __int128 gives both natively. */
 static inline int64_t mulshr128(int64_t a, int64_t b, int n)
 {
+#if NAMCO22_HAS_INT128
     return (int64_t)(((__int128)a * (__int128)b) >> n);
+#else
+    if (n <= 0) return (int64_t)((long double)a * (long double)b);
+    long double x = (long double)a * (long double)b;
+    x /= (long double)(1ULL << (n < 63 ? n : 63));
+    return (int64_t)x;
+#endif
 }
 
 /* base16 +/- ((v * mant) << 4 >> shift) / z, saturated to int32. */
 static inline int32_t proj_sat(int64_t base16, int64_t v, int32_t mant,
                                int shift, int64_t z, int negate)
 {
+#if NAMCO22_HAS_INT128
     /* Shift through unsigned: v*mant is routinely negative and shifting a
      * negative value left is undefined behaviour (UBSan flags it). The
      * two's-complement bit pattern is identical, so the result is
@@ -96,6 +111,16 @@ static inline int32_t proj_sat(int64_t base16, int64_t v, int32_t mant,
     if (r >  (__int128)INT32_MAX) return INT32_MAX;
     if (r <  (__int128)INT32_MIN) return INT32_MIN;
     return (int32_t)r;
+#else
+    long double num = (long double)v * (long double)mant;
+    num *= 16.0L;
+    if (shift > 0) num /= (long double)(1ULL << (shift < 62 ? shift : 62));
+    long double q = z ? num / (long double)z : 0.0L;
+    long double r = (long double)base16 + (negate ? -q : q);
+    if (r > (long double)INT32_MAX) return INT32_MAX;
+    if (r < (long double)INT32_MIN) return INT32_MIN;
+    return (int32_t)r;
+#endif
 }
 
 static inline int32_t sat32(int64_t v)

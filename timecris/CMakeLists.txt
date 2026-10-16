@@ -40,25 +40,31 @@ add_custom_command(OUTPUT ${CMAKE_CURRENT_SOURCE_DIR}/gen/tc_c25.c
   COMMENT "Translating the master DSP program to C")
 set_source_files_properties(gen/tc_c25.c PROPERTIES COMPILE_OPTIONS "-O2;-w")
 
-find_package(PkgConfig REQUIRED)
-pkg_check_modules(SDL2 REQUIRED sdl2)
-if(WIN32)
-  set(ZLIB_USE_STATIC_LIBS ON)
-endif()
-find_package(ZLIB REQUIRED)
-set(OpenGL_GL_PREFERENCE GLVND)
-find_package(OpenGL REQUIRED)
-include_directories(${SDL2_INCLUDE_DIRS})
-# Windows (MinGW-w64): same block as Dirt Dash -- win_compat.h, no console, everything static; OpenGL resolved at run time (gl_dyn.c)
-if(WIN32)
-  add_compile_options(-include ${CMAKE_CURRENT_SOURCE_DIR}/../include/win_compat.h)
-  add_link_options(-mwindows -static-libgcc -static)
-  set(SDL2_LIBRARIES ${SDL2_STATIC_LDFLAGS} ws2_32)   # engine/ss22_out.c: the MAME network-output socket (Winsock2)
-  set(TC_GL_LIB "")
-  set(TC_GL_SRC ${NAMCO22_ENGINE_DIR}/gl_dyn.c)
+if(NOT TC_WII_PORT)
+  find_package(PkgConfig REQUIRED)
+  pkg_check_modules(SDL2 REQUIRED sdl2)
+  if(WIN32)
+    set(ZLIB_USE_STATIC_LIBS ON)
+  endif()
+  find_package(ZLIB REQUIRED)
+  set(OpenGL_GL_PREFERENCE GLVND)
+  find_package(OpenGL REQUIRED)
+  include_directories(${SDL2_INCLUDE_DIRS})
+  # Windows (MinGW-w64): same block as Dirt Dash -- win_compat.h, no console, everything static; OpenGL resolved at run time (gl_dyn.c)
+  if(WIN32)
+    add_compile_options(-include ${CMAKE_CURRENT_SOURCE_DIR}/../include/win_compat.h)
+    add_link_options(-mwindows -static-libgcc -static)
+    set(SDL2_LIBRARIES ${SDL2_STATIC_LDFLAGS} ws2_32)   # engine/ss22_out.c: the MAME network-output socket (Winsock2)
+    set(TC_GL_LIB "")
+    set(TC_GL_SRC ${NAMCO22_ENGINE_DIR}/gl_dyn.c)
+  else()
+    set(TC_GL_LIB OpenGL::GL)
+    set(TC_GL_SRC "")
+  endif()
 else()
-  set(TC_GL_LIB OpenGL::GL)
+  set(TC_GL_LIB "")
   set(TC_GL_SRC "")
+  find_package(ZLIB REQUIRED)
 endif()
 
 # The SOUND MCU program (ts1data.8k), translated to C from the ROM file by the shared tools/gen/snd_translate.py (--game tc). tools/gen/snd.cov: the
@@ -71,20 +77,41 @@ add_custom_command(OUTPUT ${CMAKE_CURRENT_SOURCE_DIR}/gen/tc_snd_driver.c
   COMMENT "Translating the sound MCU program to C")
 set_source_files_properties(gen/tc_snd_driver.c PROPERTIES COMPILE_OPTIONS "-O1;-w")
 
-set(TC_CORE_SRC src/tc_game.c
-    ${NAMCO22_ENGINE_LIFT_SRC} ${NAMCO22_ENGINE_C25_SRC} ${NAMCO22_ENGINE_SND_SRC}
-    ${NAMCO22_ENGINE_GL_SRC} ${NAMCO22_ENGINE_SS22_SRC} ${NAMCO22_ENGINE_SS22_HOST_SRC} ${NAMCO22_ENGINE_UI_SRC} ${NAMCO22_ENGINE_ROMZIP_SRC} ${TC_GL_SRC}
-    ${TC_LIFTED} gen/tc_c25.c)
+if(TC_WII_PORT)
+  set(TC_CORE_SRC src/tc_game.c
+      ${NAMCO22_ENGINE_LIFT_SRC} ${NAMCO22_ENGINE_C25_SRC} ${NAMCO22_ENGINE_SND_SRC}
+      ${NAMCO22_ENGINE_SS22_SRC}
+      ${NAMCO22_ENGINE_DIR}/ss22_host.c
+      ${NAMCO22_ENGINE_DIR}/ss22_input_wii.c
+      ${NAMCO22_ENGINE_DIR}/ss22_out.c
+      ${NAMCO22_ENGINE_DIR}/ss22_board.c
+      ${NAMCO22_ENGINE_DIR}/ss22_link.c
+      ${NAMCO22_ENGINE_DIR}/c139.c
+      ${NAMCO22_ENGINE_DIR}/ss22_dsp.c
+      ${NAMCO22_ENGINE_DIR}/ss22_snd.c
+      ${NAMCO22_ENGINE_DIR}/ss22_video.c
+      ${NAMCO22_ENGINE_DIR}/ss22_env.c
+      ${NAMCO22_ENGINE_DIR}/ss22_run.c
+      ${NAMCO22_ENGINE_DIR}/eng_cfg.c
+      ${NAMCO22_ENGINE_ROMZIP_SRC}
+      ${TC_LIFTED} gen/tc_c25.c)
+else()
+  set(TC_CORE_SRC src/tc_game.c
+      ${NAMCO22_ENGINE_LIFT_SRC} ${NAMCO22_ENGINE_C25_SRC} ${NAMCO22_ENGINE_SND_SRC}
+      ${NAMCO22_ENGINE_GL_SRC} ${NAMCO22_ENGINE_SS22_SRC} ${NAMCO22_ENGINE_SS22_HOST_SRC} ${NAMCO22_ENGINE_UI_SRC} ${NAMCO22_ENGINE_ROMZIP_SRC} ${TC_GL_SRC}
+      ${TC_LIFTED} gen/tc_c25.c)
+endif()
 
 if(TC_WII_PORT)
-  if(NOT CMAKE_SYSTEM_NAME STREQUAL "Nintendo" AND NOT CMAKE_SYSTEM_NAME STREQUAL "Wii")
-    message(FATAL_ERROR "TC_WII_PORT requires a Nintendo/Wii toolchain. Use the devkitPro Wii toolchain file.")
+  if(NOT CMAKE_SYSTEM_NAME STREQUAL "Nintendo" AND NOT CMAKE_SYSTEM_NAME STREQUAL "Wii" AND NOT CMAKE_SYSTEM_NAME STREQUAL "Generic")
+    message(FATAL_ERROR "TC_WII_PORT requires a Nintendo/Wii or devkitPro cross toolchain. Use the custom Wii toolchain file.")
   endif()
 
   if(NOT DEFINED DEVKITPRO)
     message(FATAL_ERROR "DEVKITPRO must be set for the Wii target.")
   endif()
 
+  message(STATUS "Building native Time Crisis Wii backend")
   add_compile_definitions(__WII__)
   set(TC_WII_SRC
       ${CMAKE_CURRENT_SOURCE_DIR}/wii/port.c

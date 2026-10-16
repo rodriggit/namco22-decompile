@@ -1,6 +1,7 @@
 /* render_target.h — render at the chosen resolution, scale to the window. */
 #ifndef RENDER_TARGET_H
 #define RENDER_TARGET_H
+#ifndef __WII__
 #include <SDL2/SDL.h>
 
 /* Bind the offscreen target of res_w x res_h (0 x 0 = native: draw straight
@@ -11,5 +12,6 @@ void rt_begin(SDL_Window *win, int res_w, int res_h, int *out_w, int *out_h);
 void rt_end(SDL_Window *win, int stretch);
 /* Or: into the window rectangle (x, y top-left, drawable pixels), sharp = nearest. */
 void rt_end_rect(SDL_Window *win, int x, int y, int w, int h, int sharp);
+#endif
 
 #endif

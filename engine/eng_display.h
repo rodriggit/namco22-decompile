@@ -15,8 +15,10 @@
  */
 #ifndef ENG_DISPLAY_H
 #define ENG_DISPLAY_H
-#include <SDL2/SDL.h>
 #include <stdbool.h>
+#ifndef __WII__
+#include <SDL2/SDL.h>
+#endif
 
 typedef struct {
     int wide;                    /* 0/1 */
@@ -37,6 +39,8 @@ extern bool g_eng_disp_light_gun;          /* the host: this game aims a light g
 /* Before the window exists: load cfg_path (engine/eng_cfg.c) into g_eng_disp. scale > 0 overrides the saved window size,
  * fullscreen forces fullscreen (desktop). */
 extern int g_eng_disp_native_default;   /* set before eng_disp_load: no saved resolution means Native (window size) */
+
+#ifndef __WII__
 void eng_disp_load(const char *cfg_path, int scale, bool fullscreen);
 /* After the window exists: the exclusive mode, a size too big for this display. */
 void eng_disp_attach(SDL_Window *win);
@@ -69,4 +73,5 @@ void eng_disp_res_label(int w, int h, char *out, size_t n);
 const char *eng_disp_winmode_name(int m);
 const char *eng_disp_aspect_name(int a);
 const char *eng_disp_scaling_name(int s);
+#endif
 #endif

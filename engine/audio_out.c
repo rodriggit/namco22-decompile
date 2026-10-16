@@ -5,7 +5,9 @@
 #include <string.h>
 #include <math.h>
 #include <stdatomic.h>
+#ifndef __WII__
 #include <SDL2/SDL.h>
+#endif
 #include "audio_out.h"
 
 #define OUT_HZ 48000
@@ -21,7 +23,9 @@ static int target_max = OUT_HZ * 140 / 1000;
 #define TARGET atomic_load_explicit(&g_target, memory_order_relaxed)
 static int16_t ring[RING * 2];
 static atomic_uint r_head, r_tail;
+#ifndef __WII__
 static SDL_AudioDeviceID dev;
+#endif
 static double rs_pos;                         /* resampler position in input samples */
 static int16_t rs_prev[4];
 static float g_mix[2][4] = { { 1, 0, 0, 0 }, { 0, 1, 0, 0 } };   /* the chip's four outputs into the stereo pair: the front pair alone */
@@ -43,6 +47,7 @@ static inline double soft_limit(double v)
     return v < 0 ? -a : a;
 }
 
+#ifndef __WII__
 static void audio_cb(void *u, Uint8 *stream, int len)
 {
     (void)u;
@@ -95,6 +100,9 @@ static void audio_cb(void *u, Uint8 *stream, int len)
         cb_samples -= OUT_HZ; per_sec_ur = 0;
     }
 }
+#endif
+
+#ifndef __WII__
 
 bool eng_audio_open(void)
 {
@@ -169,3 +177,14 @@ void eng_audio_close(void)
 {
     if (dev) { SDL_CloseAudioDevice(dev); dev = 0; if (underruns) fprintf(stderr, "[AUDIO] %u output underrun samples\n", underruns); }
 }
+
+#else
+
+bool eng_audio_open(void) { return true; }
+void eng_audio_set_gain(double gain) { (void)gain; }
+void eng_audio_set_mix(const float m[2][4]) { (void)m; }
+void eng_audio_set_volume(int percent) { (void)percent; }
+void eng_audio_push(const int16_t *in4, int n) { (void)in4; (void)n; }
+void eng_audio_close(void) { }
+
+#endif

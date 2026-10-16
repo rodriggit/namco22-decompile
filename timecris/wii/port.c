@@ -26,14 +26,85 @@
  */
 
 static bool wii_port_ready = false;
+static bool wii_port_video_ready = false;
 static bool wii_port_audio_ready = false;
+static bool wii_port_ax_started = false;
 static uint32_t wii_port_width = 640;
 static uint32_t wii_port_height = 480;
+static uint32_t wii_port_audio_sample_rate = 32000;
+static uint16_t wii_port_audio_channels = 2;
+static uint16_t wii_port_audio_bits_per_sample = 16;
+
+static void wii_port_start_ax(void)
+{
+#ifdef __WII__
+    if (wii_port_ax_started) {
+        return;
+    }
+
+    AX_Init();
+    AXSetMasterVolume(0x7fff);
+    AX_Pause(0);
+    wii_port_ax_started = true;
+    wii_port_audio_ready = true;
+#endif
+}
 
 #ifdef __WII__
 static void *wii_port_xfb[2] = { NULL, NULL };
 static u32 wii_port_fbb = 0;
 static GXRModeObj *wii_port_rmode = NULL;
+static int16_t wii_port_audio_ring[4096];
+static size_t wii_port_audio_count = 0;
+static size_t wii_port_audio_head = 0;
+static size_t wii_port_audio_tail = 0;
+
+static uint32_t wii_port_frame_pitch(uint32_t width)
+{
+    return width * sizeof(uint16_t);
+}
+
+static void wii_port_copy_frame_to_xfb(const wii_platform_frame *frame)
+{
+    if (!wii_port_xfb[wii_port_fbb] || !frame || !frame->pixels) {
+        return;
+    }
+
+    uint16_t *dst = (uint16_t *)wii_port_xfb[wii_port_fbb];
+    const uint32_t width = frame->width ? frame->width : wii_port_width;
+    const uint32_t height = frame->height ? frame->height : wii_port_height;
+    const uint32_t display_width = wii_port_rmode ? wii_port_rmode->fbWidth : width;
+    const uint32_t dst_pitch = wii_port_frame_pitch(display_width);
+    const uint32_t src_stride = frame->pitch ? frame->pitch : (width * sizeof(uint16_t));
+
+    if (frame->format == WII_FRAME_FORMAT_XRGB8888) {
+        const uint32_t *src = (const uint32_t *)frame->pixels;
+        for (uint32_t y = 0; y < height; ++y) {
+            uint16_t *row = dst + (y * display_width);
+            const uint32_t *src_row = src + (y * (src_stride / sizeof(uint32_t)));
+            for (uint32_t x = 0; x < width && x < display_width; ++x) {
+                const uint32_t value = src_row[x];
+                const uint8_t r = (uint8_t)((value >> 16) & 0xFF);
+                const uint8_t g = (uint8_t)((value >> 8) & 0xFF);
+                const uint8_t b = (uint8_t)(value & 0xFF);
+                row[x] = (uint16_t)(((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3));
+            }
+        }
+    } else if (frame->format == WII_FRAME_FORMAT_RGB565) {
+        const uint16_t *src = (const uint16_t *)frame->pixels;
+        for (uint32_t y = 0; y < height; ++y) {
+            uint16_t *row = dst + (y * display_width);
+            const uint16_t *src_row = src + (y * (src_stride / sizeof(uint16_t)));
+            for (uint32_t x = 0; x < width && x < display_width; ++x) {
+                row[x] = src_row[x];
+            }
+        }
+    } else {
+        memset(dst, 0, dst_pitch * height);
+    }
+
+    DCFlushRange(wii_port_xfb[wii_port_fbb], dst_pitch * height);
+}
 #endif
 
 void wii_port_init(void)
@@ -43,6 +114,7 @@ void wii_port_init(void)
         return;
     }
 
+    VIDEO_Init();
     WPAD_Init();
     PAD_Init();
     WPAD_SetVRes(0, 640, 480);
@@ -60,8 +132,20 @@ void wii_port_shutdown(void)
 #ifdef __WII__
     if (wii_port_audio_ready) {
         AX_Pause(0);
+        AXSetMasterVolume(0);
         wii_port_audio_ready = false;
     }
+    if (wii_port_video_ready) {
+        GX_AbortFrame();
+        wii_port_video_ready = false;
+    }
+    wii_port_ax_started = false;
+    wii_port_audio_count = 0;
+    wii_port_audio_head = 0;
+    wii_port_audio_tail = 0;
+    wii_port_xfb[0] = NULL;
+    wii_port_xfb[1] = NULL;
+    wii_port_rmode = NULL;
     WPAD_Shutdown();
     PAD_Shutdown();
     wii_port_ready = false;
@@ -69,6 +153,11 @@ void wii_port_shutdown(void)
 #else
     (void)0;
 #endif
+}
+
+bool wii_port_is_ready(void)
+{
+    return wii_port_ready;
 }
 
 void wii_port_configure(const wii_platform_config *config)
@@ -84,6 +173,10 @@ void wii_port_configure(const wii_platform_config *config)
     wii_port_height = config->height ? config->height : 480;
 
     wii_port_rmode = VIDEO_GetPreferredMode(NULL);
+    if (wii_port_rmode) {
+        wii_port_width = (uint32_t)wii_port_rmode->fbWidth;
+        wii_port_height = (uint32_t)wii_port_rmode->efbHeight;
+    }
     if (!wii_port_rmode) {
         return;
     }
@@ -101,6 +194,7 @@ void wii_port_configure(const wii_platform_config *config)
     }
 
     GX_Init();
+    wii_port_video_ready = true;
     GX_SetViewport(0.0f, 0.0f, (float)wii_port_rmode->fbWidth, (float)wii_port_rmode->efbHeight, 0.0f, 1.0f);
     GX_SetScissor(0, 0, wii_port_rmode->fbWidth, wii_port_rmode->efbHeight);
     GX_SetDispCopyGamma(GX_GM_1_0);
@@ -108,9 +202,10 @@ void wii_port_configure(const wii_platform_config *config)
     GX_SetDispCopyDst(wii_port_rmode->fbWidth, wii_port_rmode->efbHeight);
     GX_SetCopyFilter(wii_port_rmode->aa, wii_port_rmode->sample_pattern, GX_TRUE, wii_port_rmode->vfilter);
     GX_SetFieldMode(wii_port_rmode->field_rendering, GX_ENABLE);
+    GX_SetCopyClear((GXColor){0, 0, 0, 0xFF}, GX_MAX_Z24);
 
     if (config->audio_enabled) {
-        AX_Init();
+        wii_port_start_ax();
         wii_port_audio_ready = true;
     }
 
@@ -139,25 +234,28 @@ void wii_port_setup_audio(const wii_platform_audio *audio)
         wii_port_init();
     }
 
-    if (audio->channels > 0 && audio->bits_per_sample > 0) {
+    if (audio->sample_rate > 0) {
+        wii_port_audio_sample_rate = audio->sample_rate;
+    }
+    if (audio->channels > 0) {
+        wii_port_audio_channels = audio->channels;
+    }
+    if (audio->bits_per_sample > 0) {
+        wii_port_audio_bits_per_sample = audio->bits_per_sample;
+    }
+
+    if (wii_port_audio_channels > 0 && wii_port_audio_bits_per_sample > 0) {
         wii_port_audio_ready = true;
     }
 
-    /*
-     * Native Wii path:
-     *  - init AX if not already active
-     *  - prepare a 16-bit stereo stream contract for the Time Crisis runtime
-     *  - keep the rest of the game untouched by normalizing output through the
-     *    backend API instead of SDL or desktop mixer code
-     */
     if (wii_port_audio_ready) {
-        AX_Init();
+        wii_port_start_ax();
     }
 
     printf("[WII] setup AX audio %u Hz, %u ch, %u bits\n",
-           audio->sample_rate,
-           audio->channels,
-           audio->bits_per_sample);
+           wii_port_audio_sample_rate,
+           wii_port_audio_channels,
+           wii_port_audio_bits_per_sample);
 #else
     (void)audio;
 #endif
@@ -200,6 +298,10 @@ void wii_port_poll_input(wii_platform_input *input)
 void wii_port_begin_frame(void)
 {
 #ifdef __WII__
+    if (!wii_port_ready || !wii_port_video_ready || !wii_port_rmode) {
+        return;
+    }
+
     GX_InvalidateTexAll();
     GX_SetZMode(GX_FALSE, GX_ALWAYS, GX_FALSE);
     GX_SetCullMode(GX_CULL_NONE);
@@ -219,19 +321,18 @@ void wii_port_begin_frame(void)
 void wii_port_end_frame(const wii_platform_frame *frame)
 {
 #ifdef __WII__
+    if (!wii_port_ready || !wii_port_video_ready || !wii_port_rmode) {
+        return;
+    }
+
     GX_DrawDone();
     GX_Flush();
 
-    /*
-     * Real GX presentation contract:
-     *  - the host submits a frame buffer in the normalized platform layout
-     *  - the Wii backend copies it into the display pipeline
-     *  - the next framebuffer is presented during the next VBlank
-     */
     if (frame && frame->pixels) {
-        GX_CopyDisp(frame->pixels, GX_FALSE);
+        wii_port_copy_frame_to_xfb(frame);
     } else {
-        GX_CopyDisp(NULL, GX_FALSE);
+        memset(wii_port_xfb[wii_port_fbb], 0, wii_port_frame_pitch(wii_port_width) * wii_port_height);
+        DCFlushRange(wii_port_xfb[wii_port_fbb], wii_port_frame_pitch(wii_port_width) * wii_port_height);
     }
 
     wii_port_fbb ^= 1;
@@ -246,18 +347,19 @@ void wii_port_end_frame(const wii_platform_frame *frame)
 void wii_port_submit_frame(const wii_platform_frame *frame)
 {
 #ifdef __WII__
-    if (frame) {
-        if (frame->width > 0) {
-            wii_port_width = frame->width;
-        }
-        if (frame->height > 0) {
-            wii_port_height = frame->height;
-        }
-        if (frame->pitch > 0) {
-            /* The Wii backend keeps the native frame contract aligned with the
-             * host's pitch and pixel buffer, so the runtime can submit the buffer
-             * without assuming a fixed desktop-size layout. */
-        }
+    if (!wii_port_ready) {
+        wii_port_init();
+    }
+
+    if (!wii_port_video_ready || !wii_port_rmode || !frame) {
+        return;
+    }
+
+    if (frame->width > 0) {
+        wii_port_width = frame->width;
+    }
+    if (frame->height > 0) {
+        wii_port_height = frame->height;
     }
 #endif
 
@@ -272,23 +374,27 @@ void wii_port_submit_audio(const int16_t *samples, size_t sample_count)
         return;
     }
 
-    if (!wii_port_audio_ready) {
+    if (!wii_port_ready || !wii_port_audio_ready) {
         return;
     }
 
-    /*
-     * Native AX contract for the Wii backend:
-     *  - the engine emits a normalized 16-bit PCM stream
-     *  - the backend accepts it as a raw sample buffer
-     *  - the final AX voice setup is left to the native Wii audio path
-     *
-     * The logic of the game stays untouched; only the output delivery to the
-     * hardware changes.
-     */
-    /* Real AX routing would create or refill an AX voice here. For the backend
-     * boundary, the important part is that the stream stays in a fixed 16-bit
-     * stereo PCM format and is submitted as a raw buffer to the Wii host.
-     */
+    wii_port_start_ax();
+
+    const size_t limit = sizeof(wii_port_audio_ring) / sizeof(wii_port_audio_ring[0]);
+    size_t copied = 0;
+    while (copied < sample_count) {
+        const int16_t v = samples[copied++];
+        wii_port_audio_ring[wii_port_audio_head] = v;
+        wii_port_audio_head = (wii_port_audio_head + 1u) % limit;
+        if (wii_port_audio_count < limit) {
+            wii_port_audio_count++;
+        } else {
+            wii_port_audio_tail = (wii_port_audio_tail + 1u) % limit;
+        }
+    }
+
+    AX_Pause(0);
+    AXSetMasterVolume(0x7fff);
 #else
     (void)samples;
     (void)sample_count;

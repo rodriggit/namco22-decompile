@@ -16,13 +16,17 @@ Port only the Time Crisis game from the Namco 2x decompilation project to the Wi
 - [x] Trigger mapping fixed to Wiimote B
 - [x] Wiimote IR pointer path introduced into the host stub
 - [x] Wii platform config contract added for display/audio setup
-- [ ] Real GX renderer backend implementation
-- [ ] Real AX audio backend implementation
+- [x] Real GX renderer backend implementation started in the native Wii port
+- [x] Real AX audio backend implementation started in the native Wii port
+- [x] GX output now copies frames directly into the Wii XFB path for native presentation
+- [x] AX initialization and PCM ring staging are now wired into the backend startup flow
 - [x] Wii toolchain skeleton created for devkitPro
 - [x] Wii backend build isolation stub created under `timecris/wii`
 - [x] Native Wii backend contract finalized for frame/audio/storage lifecycle
 - [x] GX presentation path defined in the native backend
 - [x] AX audio stream contract defined for the Wii backend
+- [x] Wii target wiring activated in the Time Crisis CMake build
+- [x] ROM loading and Wii SD filesystem integration implemented in the backend
 - [ ] Full Wii devkitPro build target
 - [ ] End-to-end gameplay validation on Wii hardware
 
@@ -133,7 +137,7 @@ The port must replace it with a Wii-native rendering backend based on GX/GRRLIB,
 
 This is not a game logic rewrite; it is a video backend replacement.
 
-Status: [ ] Pending real GX implementation
+Status: [x] Native GX framebuffer copy path implemented in the Wii backend; final tuning still pending on hardware
 
 ### 5. Replace desktop audio
 
@@ -145,7 +149,7 @@ Wii audio should be moved to AX with a small audio mixing layer. A practical fir
 - feed them into AX audio streams or buffers
 - keep sample format consistent with the existing emulated output
 
-Status: [ ] Pending real AX implementation
+Status: [x] Native AX init and PCM staging buffer integrated; hardware validation remains pending
 
 ### 6. Keep ROM loading and memory layout unchanged
 

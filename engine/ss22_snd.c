@@ -309,8 +309,14 @@ bool ss22_snd_init(const char *dir)
 /* board time of scanline `line` of frame k, in MCU cycles */
 static uint64_t pin_time(uint64_t k, uint64_t line)
 {
+#if defined(__SIZEOF_INT128__)
     const unsigned __int128 num = (unsigned __int128)MCU_HZ * 1000u, den = (unsigned __int128)FPS_X1000 * VLINES;
     return (uint64_t)(((unsigned __int128)(k * VLINES + line) * num) / den);
+#else
+    const uint64_t num = (uint64_t)MCU_HZ * 1000u;
+    const uint64_t den = (uint64_t)FPS_X1000 * VLINES;
+    return (uint64_t)(((uint64_t)(k * VLINES + line) * num) / den);
+#endif
 }
 static int64_t pin_time_n(uint64_t n)
 {

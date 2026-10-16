@@ -7,8 +7,10 @@
  */
 #ifndef ENG_PAD_H
 #define ENG_PAD_H
-#include <SDL2/SDL.h>
 #include <stdbool.h>
+
+#ifndef __WII__
+#include <SDL2/SDL.h>
 
 #define ENG_PAD_MENU_HINT "Menu: R3 (right stick click) or hold Start"
 
@@ -39,4 +41,7 @@ static inline bool eng_pad_present(void)
     for (int j = 0, n = SDL_NumJoysticks(); j < n; j++) if (SDL_IsGameController(j)) return true;
     return false;
 }
+#else
+#define ENG_PAD_MENU_HINT "Menu"
+#endif
 #endif
