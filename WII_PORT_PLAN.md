@@ -6,6 +6,21 @@ This document describes a focused porting strategy to adapt the Time Crisis code
 
 Port only the Time Crisis game from the Namco 2x decompilation project to the Wii, while keeping the core game logic and ROM handling intact and replacing only the host/platform layer that depends on desktop SDL/OpenGL APIs.
 
+## Status
+
+- [x] Scope narrowed to Time Crisis only
+- [x] Wii branch created
+- [x] Port plan created in English
+- [x] Nominal platform abstraction created for the Wii backend
+- [x] Time Crisis Wii backend files isolated under `timecris/wii`
+- [x] Trigger mapping fixed to Wiimote B
+- [x] Wiimote IR pointer path introduced into the host stub
+- [x] Wii platform config contract added for display/audio setup
+- [ ] Real GX renderer backend implementation
+- [ ] Real AX audio backend implementation
+- [ ] Full Wii devkitPro build target
+- [ ] End-to-end gameplay validation on Wii hardware
+
 ## Scope
 
 This plan intentionally ignores the other games in the repository. The target is a Wii-native build for Time Crisis only.
@@ -59,6 +74,8 @@ Keep the current Linux/Windows build intact and do not modify the Time Crisis ga
 
 The Wii port should act as a second platform backend that reuses the same game logic and ROM data, while replacing only the host runtime layer.
 
+Status: [x] Done
+
 ### 2. Introduce a platform abstraction layer
 
 Create a minimal platform interface for the engine, roughly along these lines:
@@ -74,6 +91,8 @@ Create a minimal platform interface for the engine, roughly along these lines:
 
 This layer should isolate the engine from desktop-specific dependencies, especially SDL and OpenGL.
 
+Status: [x] Done
+
 ### 3. Replace SDL windowing and input
 
 The current desktop host code expects an SDL window and keyboard/mouse/gamepad input model.
@@ -87,10 +106,12 @@ On Wii:
 
 For example:
 
-- trigger -> Wiimote button / Nunchuk trigger input
-- pedal / reload -> another mapped button
+- trigger -> Wiimote B button
+- pedal / reload -> mapped to Wiimote 1 or Nunchuk Z
 - coin / service / test -> mapped menu commands
-- aim -> either pointer emulation or a simplified analog mapping
+- aim -> Wiimote IR pointer
+
+Status: [x] Input mapping baseline defined
 
 ### 4. Replace the OpenGL renderer
 
@@ -107,6 +128,8 @@ The port must replace it with a Wii-native rendering backend based on GX/GRRLIB,
 
 This is not a game logic rewrite; it is a video backend replacement.
 
+Status: [ ] Pending real GX implementation
+
 ### 5. Replace desktop audio
 
 The project currently uses SDL audio functions in the engine.
@@ -117,17 +140,23 @@ Wii audio should be moved to AX with a small audio mixing layer. A practical fir
 - feed them into AX audio streams or buffers
 - keep sample format consistent with the existing emulated output
 
+Status: [ ] Pending real AX implementation
+
 ### 6. Keep ROM loading and memory layout unchanged
 
 Time Crisis depends on ROM files unpacked from the original MAME set and the generated C code output.
 
 The Wii version should still use the same ROM data layout and game logic. Only the file discovery and loading path must be adapted to the Wii homebrew filesystem.
 
+Status: [ ] Pending Wii filesystem integration
+
 ### 7. Create a Wii-only build target
 
 Add a dedicated Wii build path with devkitPro toolchain settings. Keep the existing Linux/Windows build paths untouched.
 
 The build target should compile only the Time Crisis subset and use Wii-specific libraries.
+
+Status: [ ] Pending devkitPro target definition
 
 ## Recommended implementation order
 
@@ -136,6 +165,8 @@ The build target should compile only the Time Crisis subset and use Wii-specific
 - create a dedicated `wii` branch
 - isolate Time Crisis from the rest of the repo
 - confirm which engine files are required for `tc_game.c` and the main runtime
+
+Status: [x] Done
 
 ### Phase 2: platform stub
 
@@ -147,11 +178,15 @@ The build target should compile only the Time Crisis subset and use Wii-specific
   - file access
 - compile a minimal Wii binary that boots and reaches the engine entry point
 
+Status: [x] Stub layer and backend contract in place
+
 ### Phase 3: input layer
 
 - implement control mapping for Wii input
 - support at least a basic playable control scheme
 - keep the original emulator logic unchanged
+
+Status: [x] Baseline mapping implemented: trigger is Wiimote B; IR pointer integrated
 
 ### Phase 4: graphics backend
 
@@ -159,10 +194,14 @@ The build target should compile only the Time Crisis subset and use Wii-specific
 - ensure the game displays correctly at 480p or native Wii resolution
 - tune scaling and aspect ratio
 
+Status: [ ] Pending real GX implementation
+
 ### Phase 5: audio backend
 
 - route generated sound to AX
 - verify basic audio timing and stream operation
+
+Status: [ ] Pending real AX implementation
 
 ### Phase 6: validation
 
@@ -170,6 +209,8 @@ The build target should compile only the Time Crisis subset and use Wii-specific
 - verify menu flow and startup behavior
 - test basic gameplay loop
 - fix frame pacing and input latency
+
+Status: [ ] Pending end-to-end Wii validation
 
 ## Risks and expected challenges
 
@@ -188,6 +229,33 @@ The original Time Crisis game uses a gun-style input model with trigger, pedal, 
 ### Audio pipeline complexity
 
 The original project emits sound from the emulated machine. The Wii backend must produce audio without breaking timing.
+
+## Next concrete work block
+
+### GX render backend
+
+- define the Wii frame buffer lifecycle in the backend
+- replace the desktop OpenGL host path in the Wii branch with GX presentation
+- maintain a 4:3 arcade presentation with Wii-native scaling
+- handle screen clear, texture upload, and final blit path
+
+Status: [ ] In progress
+
+### AX audio backend
+
+- initialize AX audio stream with a fixed rate and format
+- queue PCM output generated by the engine
+- keep the sample format aligned with 16-bit stereo output
+
+Status: [ ] In progress
+
+### devkitPro build target
+
+- add the Wii toolchain definition for Time Crisis only
+- isolate the build to the native backend and the Time Crisis subset
+- keep desktop builds unchanged for Linux/Windows
+
+Status: [ ] In progress
 
 ## Success criteria
 

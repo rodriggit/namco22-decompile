@@ -54,7 +54,13 @@ bool ss22_host_open(const ss22_host_game *g, int scale, bool fs)
             .ir_enabled = true,
             .audio_enabled = true,
         };
+        const wii_platform_audio audio = {
+            .sample_rate = 32000,
+            .channels = 2,
+            .bits_per_sample = 16,
+        };
         wii_port_configure(&cfg);
+        wii_port_setup_audio(&audio);
     }
     memset(&wii_input, 0, sizeof(wii_input));
     fprintf(stderr, "[WII] host stub initialized for %s\n", game ? game->title : "Time Crisis");
@@ -86,7 +92,17 @@ bool ss22_host_pointer(float *nx, float *ny, bool *inside)
 
 bool ss22_host_frame(void)
 {
+    static uint16_t frame_buffer[640 * 480];
+    static wii_platform_frame frame = {
+        .width = 640,
+        .height = 480,
+        .pitch = 640 * 2,
+        .format = 0,
+        .pixels = frame_buffer,
+    };
+
     wii_port_poll_input(&wii_input);
+    wii_port_submit_frame(&frame);
     return true;
 }
 

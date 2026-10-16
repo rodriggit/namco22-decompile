@@ -54,12 +54,20 @@ typedef struct wii_platform_config {
     bool audio_enabled;
 } wii_platform_config;
 
+typedef struct wii_platform_audio {
+    uint32_t sample_rate;
+    uint16_t channels;
+    uint16_t bits_per_sample;
+} wii_platform_audio;
+
 void wii_port_init(void);
 void wii_port_shutdown(void);
 void wii_port_configure(const wii_platform_config *config);
+void wii_port_setup_audio(const wii_platform_audio *audio);
 void wii_port_poll_input(wii_platform_input *input);
 void wii_port_begin_frame(void);
 void wii_port_end_frame(const wii_platform_frame *frame);
+void wii_port_submit_frame(const wii_platform_frame *frame);
 void wii_port_submit_audio(const int16_t *samples, size_t sample_count);
 bool wii_port_load_rom(const char *path, void *buffer, size_t size);
 const char *wii_port_storage_root(void);
