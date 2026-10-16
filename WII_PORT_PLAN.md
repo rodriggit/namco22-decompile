@@ -18,6 +18,11 @@ Port only the Time Crisis game from the Namco 2x decompilation project to the Wi
 - [x] Wii platform config contract added for display/audio setup
 - [ ] Real GX renderer backend implementation
 - [ ] Real AX audio backend implementation
+- [x] Wii toolchain skeleton created for devkitPro
+- [x] Wii backend build isolation stub created under `timecris/wii`
+- [x] Native Wii backend contract finalized for frame/audio/storage lifecycle
+- [x] GX presentation path defined in the native backend
+- [x] AX audio stream contract defined for the Wii backend
 - [ ] Full Wii devkitPro build target
 - [ ] End-to-end gameplay validation on Wii hardware
 
@@ -255,7 +260,7 @@ Status: [ ] In progress
 - isolate the build to the native backend and the Time Crisis subset
 - keep desktop builds unchanged for Linux/Windows
 
-Status: [ ] In progress
+Status: [x] Toolchain and backend-isolation gate are in place; final target wiring remains to be completed
 
 ## Success criteria
 

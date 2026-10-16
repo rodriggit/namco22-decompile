@@ -12,6 +12,7 @@ set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_EXTENSIONS ON)
 add_compile_options(-fno-strict-aliasing -fwrapv)
 option(PORTABLE "Bind glibc symbols to baseline versions (runs on glibc >= 2.34)" ON)
+option(TC_WII_PORT "Build the Time Crisis native Wii backend instead of the desktop host" OFF)
 if(PORTABLE AND NOT WIN32 AND CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")
   add_compile_options(-include ${CMAKE_CURRENT_SOURCE_DIR}/../include/glibc_compat.h)
 endif()
@@ -74,6 +75,26 @@ set(TC_CORE_SRC src/tc_game.c
     ${NAMCO22_ENGINE_LIFT_SRC} ${NAMCO22_ENGINE_C25_SRC} ${NAMCO22_ENGINE_SND_SRC}
     ${NAMCO22_ENGINE_GL_SRC} ${NAMCO22_ENGINE_SS22_SRC} ${NAMCO22_ENGINE_SS22_HOST_SRC} ${NAMCO22_ENGINE_UI_SRC} ${NAMCO22_ENGINE_ROMZIP_SRC} ${TC_GL_SRC}
     ${TC_LIFTED} gen/tc_c25.c)
+
+if(TC_WII_PORT)
+  if(NOT CMAKE_SYSTEM_NAME STREQUAL "Nintendo" AND NOT CMAKE_SYSTEM_NAME STREQUAL "Wii")
+    message(FATAL_ERROR "TC_WII_PORT requires a Nintendo/Wii toolchain. Use the devkitPro Wii toolchain file.")
+  endif()
+
+  if(NOT DEFINED DEVKITPRO)
+    message(FATAL_ERROR "DEVKITPRO must be set for the Wii target.")
+  endif()
+
+  add_compile_definitions(__WII__)
+  set(TC_WII_SRC
+      ${CMAKE_CURRENT_SOURCE_DIR}/wii/port.c
+  )
+  add_executable(tc_wii ${TC_CORE_SRC} ${TC_WII_SRC})
+  target_compile_definitions(tc_wii PRIVATE __WII__)
+  target_include_directories(tc_wii PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/wii)
+  target_link_libraries(tc_wii ogc wiiuse gcc m ZLIB::ZLIB)
+  return()
+endif()
 
 # THE GAME: the 68K lifted, the master DSP and the sound MCU translated -- no interpreter anywhere (HARD RULE 1/2)
 if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/tools/gen/snd.cov)

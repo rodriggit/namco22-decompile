@@ -96,8 +96,8 @@ bool ss22_host_frame(void)
     static wii_platform_frame frame = {
         .width = 640,
         .height = 480,
-        .pitch = 640 * 2,
-        .format = 0,
+        .pitch = 640 * sizeof(uint16_t),
+        .format = WII_FRAME_FORMAT_RGB565,
         .pixels = frame_buffer,
     };
 

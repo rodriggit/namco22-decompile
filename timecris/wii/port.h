@@ -38,7 +38,22 @@ typedef struct wii_platform_input {
     int16_t stick_y;
 } wii_platform_input;
 
+enum wii_platform_frame_format {
+    WII_FRAME_FORMAT_INVALID = 0,
+    WII_FRAME_FORMAT_RGB565 = 1,
+    WII_FRAME_FORMAT_XRGB8888 = 2,
+};
+
 typedef struct wii_platform_frame {
+    /*
+     * Wii-native frame contract:
+     *  - width / height describe the logical frame size
+     *  - pitch is the byte stride in the submitted pixel buffer
+     *  - format identifies the native pixel representation.
+     *
+     * The host is expected to submit a framebuffer in a format compatible with
+     * the GX backend; the game logic itself remains unaware of the hardware.
+     */
     uint32_t width;
     uint32_t height;
     uint32_t pitch;
@@ -55,6 +70,12 @@ typedef struct wii_platform_config {
 } wii_platform_config;
 
 typedef struct wii_platform_audio {
+    /*
+     * Native Wii audio contract:
+     *  - sample_rate: target AX output rate
+     *  - channels: 1 or 2, typically stereo for the engine output
+     *  - bits_per_sample: 16-bit PCM is the expected default
+     */
     uint32_t sample_rate;
     uint16_t channels;
     uint16_t bits_per_sample;

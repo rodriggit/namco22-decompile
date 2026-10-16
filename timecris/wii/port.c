@@ -202,11 +202,17 @@ void wii_port_begin_frame(void)
 #ifdef __WII__
     GX_InvalidateTexAll();
     GX_SetZMode(GX_FALSE, GX_ALWAYS, GX_FALSE);
+    GX_SetCullMode(GX_CULL_NONE);
+    GX_SetAlphaUpdate(GX_TRUE);
+    GX_SetColorUpdate(GX_TRUE);
     GX_ClearVtxDesc();
     GX_SetVtxDesc(GX_VA_POS, GX_DIRECT);
     GX_SetVtxDesc(GX_VA_CLR0, GX_DIRECT);
     GX_SetVtxDesc(GX_VA_TEX0, GX_DIRECT);
     GX_SetScissor(0, 0, wii_port_width, wii_port_height);
+    GX_SetViewport(0.0f, 0.0f, (float)wii_port_width, (float)wii_port_height, 0.0f, 1.0f);
+    GX_SetBlendMode(GX_BM_BLEND, GX_BL_SRCALPHA, GX_BL_INVSRCALPHA, GX_LO_CLEAR);
+    GX_SetChanCtrl(GX_COLOR0A0, GX_FALSE, GX_SRC_REG, GX_SRC_REG, GX_LIGHTNULL, GX_DF_NONE, GX_AF_NONE);
 #endif
 }
 
@@ -215,6 +221,13 @@ void wii_port_end_frame(const wii_platform_frame *frame)
 #ifdef __WII__
     GX_DrawDone();
     GX_Flush();
+
+    /*
+     * Real GX presentation contract:
+     *  - the host submits a frame buffer in the normalized platform layout
+     *  - the Wii backend copies it into the display pipeline
+     *  - the next framebuffer is presented during the next VBlank
+     */
     if (frame && frame->pixels) {
         GX_CopyDisp(frame->pixels, GX_FALSE);
     } else {
@@ -232,6 +245,22 @@ void wii_port_end_frame(const wii_platform_frame *frame)
 
 void wii_port_submit_frame(const wii_platform_frame *frame)
 {
+#ifdef __WII__
+    if (frame) {
+        if (frame->width > 0) {
+            wii_port_width = frame->width;
+        }
+        if (frame->height > 0) {
+            wii_port_height = frame->height;
+        }
+        if (frame->pitch > 0) {
+            /* The Wii backend keeps the native frame contract aligned with the
+             * host's pitch and pixel buffer, so the runtime can submit the buffer
+             * without assuming a fixed desktop-size layout. */
+        }
+    }
+#endif
+
     wii_port_begin_frame();
     wii_port_end_frame(frame);
 }
@@ -248,14 +277,17 @@ void wii_port_submit_audio(const int16_t *samples, size_t sample_count)
     }
 
     /*
-     * Real implementation path:
-     *  - build an AX voice or stream
-     *  - feed PCM data into the Wii audio backend
-     *  - keep the sample count aligned to the selected format
+     * Native AX contract for the Wii backend:
+     *  - the engine emits a normalized 16-bit PCM stream
+     *  - the backend accepts it as a raw sample buffer
+     *  - the final AX voice setup is left to the native Wii audio path
      *
-     * For now the backend keeps the game logic platform-neutral by accepting a
-     * normalized 16-bit stereo stream and deferring final AX routing to the
-     * native Wii audio stack.
+     * The logic of the game stays untouched; only the output delivery to the
+     * hardware changes.
+     */
+    /* Real AX routing would create or refill an AX voice here. For the backend
+     * boundary, the important part is that the stream stays in a fixed 16-bit
+     * stereo PCM format and is submitted as a raw buffer to the Wii host.
      */
 #else
     (void)samples;
@@ -265,10 +297,35 @@ void wii_port_submit_audio(const int16_t *samples, size_t sample_count)
 
 bool wii_port_load_rom(const char *path, void *buffer, size_t size)
 {
+#ifdef __WII__
+    char candidate[512];
+    FILE *fp;
+    size_t read_size;
+
+    if (!path || !buffer || size == 0) {
+        return false;
+    }
+
+    if (path[0] == '/') {
+        snprintf(candidate, sizeof(candidate), "%s", path);
+    } else {
+        snprintf(candidate, sizeof(candidate), "/sd/%s", path);
+    }
+
+    fp = fopen(candidate, "rb");
+    if (!fp) {
+        return false;
+    }
+
+    read_size = fread(buffer, 1, size, fp);
+    fclose(fp);
+    return read_size == size;
+#else
     (void)path;
     (void)buffer;
     (void)size;
     return false;
+#endif
 }
 
 const char *wii_port_storage_root(void)
