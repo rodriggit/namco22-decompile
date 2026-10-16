@@ -97,6 +97,7 @@ void wii_port_begin_frame(void);
 void wii_port_end_frame(const wii_platform_frame *frame);
 void wii_port_submit_frame(const wii_platform_frame *frame);
 void wii_port_submit_audio(const int16_t *samples, size_t sample_count);
+void *wii_port_mem2_alloc(size_t size, size_t align);
 bool wii_port_load_rom(const char *path, void *buffer, size_t size);
 const char *wii_port_storage_root(void);
 

@@ -23,7 +23,7 @@ include(${CMAKE_CURRENT_SOURCE_DIR}/../engine/engine.cmake)
 #   python3 ../tools/namco22/lift.py decompiled/pcode.txt gen tc timecris_main.bin && python3 ../tools/namco22/lift_split.py gen/tc_lifted.c 16
 # 58 MB of goto-heavy C in ONE file needed more than 8 GB of gcc; the parts (shared tool lift_split.py) need about 1 GB each. -O1 is plenty.
 file(GLOB TC_LIFTED CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/gen/tc_lifted_*.c)
-set_source_files_properties(${TC_LIFTED} PROPERTIES COMPILE_OPTIONS "-O1;-w")
+set_source_files_properties(${TC_LIFTED} PROPERTIES COMPILE_OPTIONS "-Os;-w")
 
 # The MASTER DSP program (block at ROM 0xABA8C), translated from the ROM by ../tools/gen/c25_translate.py --game tc. tools/gen/c25.cov is EMPTY until
 # the oracle build has run the game: every address is then a static one and anything the oracle would need traps.
@@ -81,6 +81,7 @@ if(TC_WII_PORT)
   set(TC_CORE_SRC src/tc_game.c
       ${NAMCO22_ENGINE_LIFT_SRC} ${NAMCO22_ENGINE_C25_SRC} ${NAMCO22_ENGINE_SND_SRC}
       ${NAMCO22_ENGINE_SS22_SRC}
+  ${NAMCO22_ENGINE_DIR}/eng.c
       ${NAMCO22_ENGINE_DIR}/ss22_host.c
       ${NAMCO22_ENGINE_DIR}/ss22_input_wii.c
       ${NAMCO22_ENGINE_DIR}/ss22_out.c
@@ -94,7 +95,7 @@ if(TC_WII_PORT)
       ${NAMCO22_ENGINE_DIR}/ss22_run.c
       ${NAMCO22_ENGINE_DIR}/eng_cfg.c
       ${NAMCO22_ENGINE_ROMZIP_SRC}
-      ${TC_LIFTED} gen/tc_c25.c)
+      ${TC_LIFTED} gen/tc_c25.c gen/tc_snd_driver.c)
 else()
   set(TC_CORE_SRC src/tc_game.c
       ${NAMCO22_ENGINE_LIFT_SRC} ${NAMCO22_ENGINE_C25_SRC} ${NAMCO22_ENGINE_SND_SRC}
@@ -118,8 +119,49 @@ if(TC_WII_PORT)
   )
   add_executable(tc_wii ${TC_CORE_SRC} ${TC_WII_SRC})
   target_compile_definitions(tc_wii PRIVATE __WII__)
-  target_include_directories(tc_wii PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/wii)
-  target_link_libraries(tc_wii ogc wiiuse gcc m ZLIB::ZLIB)
+    target_compile_options(tc_wii PRIVATE
+        -ffunction-sections -fdata-sections
+        -fno-unwind-tables -fno-asynchronous-unwind-tables)
+    target_link_options(tc_wii PRIVATE -Wl,--gc-sections)
+  target_include_directories(tc_wii PRIVATE
+      ${CMAKE_CURRENT_SOURCE_DIR}/wii
+      ${DEVKITPRO}/libogc/include
+      ${DEVKITPRO}/portlibs/ppc/include
+      ${DEVKITPRO}/portlibs/wii/include
+  )
+  target_link_directories(tc_wii PRIVATE
+      ${DEVKITPRO}/libogc/lib/wii
+      ${DEVKITPRO}/portlibs/ppc/lib
+      ${DEVKITPRO}/portlibs/wii/lib
+  )
+  target_link_libraries(tc_wii wiiuse asnd bte ogc gcc m ZLIB::ZLIB)
+
+  find_program(PPC_READELF_TOOL
+      NAMES powerpc-eabi-readelf powerpc-eabi-readelf.exe
+      HINTS ${DEVKITPRO}/devkitPPC/bin)
+  if(PPC_READELF_TOOL)
+    add_custom_command(TARGET tc_wii POST_BUILD
+        COMMAND ${CMAKE_COMMAND}
+            -DREADELF_TOOL=${PPC_READELF_TOOL}
+            -DELF_FILE=$<TARGET_FILE:tc_wii>
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/wii/check_mem1_segments.cmake
+        COMMENT "Checking tc_wii PT_LOAD ranges against Wii memory map")
+  else()
+    message(WARNING "powerpc-eabi-readelf not found (expected under ${DEVKITPRO}/devkitPPC/bin); MEM1 PT_LOAD check will be skipped")
+  endif()
+
+  find_program(ELF2DOL_TOOL
+      NAMES elf2dol elf2dol.exe
+      HINTS ${DEVKITPRO}/tools/bin)
+  if(ELF2DOL_TOOL)
+    add_custom_command(TARGET tc_wii POST_BUILD
+        COMMAND ${ELF2DOL_TOOL} $<TARGET_FILE:tc_wii> $<TARGET_FILE_DIR:tc_wii>/tc_wii.dol
+        BYPRODUCTS $<TARGET_FILE_DIR:tc_wii>/tc_wii.dol
+        COMMENT "Converting tc_wii ELF to DOL")
+  else()
+    message(WARNING "elf2dol not found (expected under ${DEVKITPRO}/tools/bin); tc_wii.dol will not be generated automatically")
+  endif()
+
   return()
 endif()
 

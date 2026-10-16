@@ -28,7 +28,7 @@
 #ifndef __WII__
 #include <SDL2/SDL.h>
 #endif
-#ifndef _WIN32
+#if !defined(_WIN32) && !defined(__WII__) && !defined(__wii__)
 #include <unistd.h>
 #endif
 #include "lift_rt.h"
@@ -389,7 +389,12 @@ void rr_tick(void)
     if (g_ss22_link_on) ss22_link_slice();                /* --link: the C139's clock and its interrupt (engine/ss22_link.c) */
     if ((serial_acc += 100) >= 60 * SLICES) { serial_acc -= 60 * SLICES; ss22_dsp_serial(); }
     if (++slice % SLICES) return;
-    if (ftime_on < 0) { ftime_on = getenv("ENG_FTIME") != NULL; if (ftime_on) { extern int g_perf_enabled; g_perf_enabled = 1; } }
+    if (ftime_on < 0) {
+        ftime_on = getenv("ENG_FTIME") != NULL;
+#if !defined(__WII__) && !defined(__wii__)
+        if (ftime_on) { extern int g_perf_enabled; g_perf_enabled = 1; }
+#endif
+    }
     if (ftime_on) {
         double t0 = ft_now();
         if (ft_prev > 0) { double tot = t0 - ft_prev; ft_tot += tot; if (tot > ft_max) { ft_max = tot; ft_max_prep = ft_lprep; ft_max_host = ft_lhost; } ft_n++; }
@@ -419,7 +424,7 @@ void rr_tick(void)
         if (ss22_host_active() && !ss22_host_frame()) {
             const bool restart = ss22_host_restart_requested();       /* File > Restart: power-cycle the cabinet */
             ss22_eeprom_save(); ss22_snd_close(); ss22_out_close(); ss22_input_close(); ss22_host_close(); fprintf(stderr, "[%s] quit at frame %u\n", g_ss22_game->tag, rr_frame);
-#ifndef _WIN32
+#if !defined(_WIN32) && !defined(__WII__) && !defined(__wii__)
             if (restart) { fflush(NULL); execv("/proc/self/exe", g_argv); perror("restart"); }
 #else
             (void)restart;
@@ -431,22 +436,30 @@ void rr_tick(void)
             if (h > 0.040) fprintf(stderr, "[FTIME-SLOW] frame %u  host %.1f ms  (prep %.1f)\n", rr_frame, h * 1e3, (t2 - t1) * 1e3);   /* one line per over-40 ms host frame: WHICH frame, not just the window's max */
         }
     }
-    if (ftime_on && rr_frame % 60 == 0 && ft_n) {
+        if (ftime_on && rr_frame % 60 == 0 && ft_n) {
+    #if !defined(__WII__) && !defined(__wii__)
         extern double g_perf_bake, g_perf_clip, g_perf_gl;
         extern long g_bb_draws, g_bb_binds;
         extern long g_tex_page_resets;
         static long ft_draws, ft_binds, ft_resets_prev;
         long ft_resets = g_tex_page_resets - ft_resets_prev; ft_resets_prev = g_tex_page_resets;
         fprintf(stderr, "[FTIME] frame %u  avg %.2f ms = cpu %.2f + prep %.2f + host %.2f   max %.2f (prep %.2f host %.2f) | bake %.2f clip %.2f gl %.2f draws %ld binds %ld resets %ld\n",
-                rr_frame, ft_tot / ft_n * 1e3, (ft_tot - ft_prep - ft_host) / ft_n * 1e3,
-                ft_prep / ft_n * 1e3, ft_host / ft_n * 1e3, ft_max * 1e3,
-                ft_max_prep * 1e3, ft_max_host * 1e3,
-                (g_perf_bake - ft_bake) / ft_n * 1e3, (g_perf_clip - ft_clip) / ft_n * 1e3, (g_perf_gl - ft_gl) / ft_n * 1e3,
-                (g_bb_draws - ft_draws) / ft_n, (g_bb_binds - ft_binds) / ft_n, ft_resets);
+            rr_frame, ft_tot / ft_n * 1e3, (ft_tot - ft_prep - ft_host) / ft_n * 1e3,
+            ft_prep / ft_n * 1e3, ft_host / ft_n * 1e3, ft_max * 1e3,
+            ft_max_prep * 1e3, ft_max_host * 1e3,
+            (g_perf_bake - ft_bake) / ft_n * 1e3, (g_perf_clip - ft_clip) / ft_n * 1e3, (g_perf_gl - ft_gl) / ft_n * 1e3,
+            (g_bb_draws - ft_draws) / ft_n, (g_bb_binds - ft_binds) / ft_n, ft_resets);
         ft_tot = ft_prep = ft_host = ft_max = 0; ft_n = 0;
         ft_bake = g_perf_bake; ft_clip = g_perf_clip; ft_gl = g_perf_gl;
         ft_draws = g_bb_draws; ft_binds = g_bb_binds;
-    }
+    #else
+        fprintf(stderr, "[FTIME] frame %u  avg %.2f ms = cpu %.2f + prep %.2f + host %.2f   max %.2f (prep %.2f host %.2f)\n",
+            rr_frame, ft_tot / ft_n * 1e3, (ft_tot - ft_prep - ft_host) / ft_n * 1e3,
+            ft_prep / ft_n * 1e3, ft_host / ft_n * 1e3, ft_max * 1e3,
+            ft_max_prep * 1e3, ft_max_host * 1e3);
+        ft_tot = ft_prep = ft_host = ft_max = 0; ft_n = 0;
+    #endif
+        }
     ss22_dsp_vblank();                                     /* INT0, when the game has enabled the DSP IRQs */
     vblank_slices = 2;
     if (!ss22_env_active()) {                            /* a trace oracle lands the interrupts itself */
@@ -578,7 +591,9 @@ int ss22_main(int argc, char **argv, const ss22_game *g)
         if (video_on && win_scale) {                    /* the player's speaker levels (the settings are loaded now) and their rows in the Audio page */
             static const eng_ui_mixer mixer = { ss22_snd_mix_rows, ss22_snd_mix_name, ss22_snd_mix_get, ss22_snd_mix_set, 200 };
             ss22_snd_mix_load();
+#if !defined(__WII__) && !defined(__wii__)
             eng_ui_set_mixer(&mixer);
+#endif
         }
         if (!video_on) { fprintf(stderr, "[%s] no picture: video could not start\n", g->tag); if (win_scale) return 2; }
     }

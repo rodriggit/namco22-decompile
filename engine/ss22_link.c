@@ -52,13 +52,18 @@ void     ss22_link_reg_write(unsigned reg, uint16_t v) { c139_reg_write(reg, v);
 void     ss22_link_sci_ack(void) { c139_irq_ack(); }
 
 /* what the chip sent, waiting for the frame's payload */
-static c139_frame outq[64]; static int outr, outw; static uint32_t out_drop;
+#if defined(__WII__) || defined(__wii__)
+#define SS22_LINK_OUTQ_CAP 8
+#else
+#define SS22_LINK_OUTQ_CAP 64
+#endif
+static c139_frame outq[SS22_LINK_OUTQ_CAP]; static int outr, outw; static uint32_t out_drop;
 static void drain_tx(void)
 {
     c139_frame f;
     while (c139_tx_take(&f)) {
-        outq[outw] = f; outw = (outw + 1) % 64;
-        if (outw == outr) { outr = (outr + 1) % 64; out_drop++; }
+        outq[outw] = f; outw = (outw + 1) % SS22_LINK_OUTQ_CAP;
+        if (outw == outr) { outr = (outr + 1) % SS22_LINK_OUTQ_CAP; out_drop++; }
     }
 }
 
@@ -113,7 +118,7 @@ int ss22_link_pack(uint8_t *buf, int max)
             if (f->w[k] & 0x100) bits[k >> 3] |= (uint8_t)(1u << (k & 7));
             buf[n++] = (uint8_t)f->w[k];
         }
-        outr = (outr + 1) % 64; count++;
+        outr = (outr + 1) % SS22_LINK_OUTQ_CAP; count++;
     }
     buf[0] = 1; buf[1] = (uint8_t)me; buf[2] = (uint8_t)count;
     pk_bytes += (uint64_t)n; pk_n++; if ((uint32_t)n > pk_max) pk_max = (uint32_t)n;

@@ -8,6 +8,7 @@
 #include <asndlib.h>
 #include <ogc/gx.h>
 #include <ogc/pad.h>
+#include <ogc/system.h>
 #include <wiiuse/wpad.h>
 #endif
 
@@ -53,7 +54,8 @@ static void wii_port_start_ax(void)
 static void *wii_port_xfb[2] = { NULL, NULL };
 static u32 wii_port_fbb = 0;
 static GXRModeObj *wii_port_rmode = NULL;
-static unsigned char wii_port_gx_fifo[256 * 1024] __attribute__((aligned(32)));
+static unsigned char *wii_port_gx_fifo;
+static const uint32_t wii_port_gx_fifo_size = 256u * 1024u;
 static int16_t wii_port_audio_ring[4096];
 static size_t wii_port_audio_count = 0;
 static size_t wii_port_audio_head = 0;
@@ -192,7 +194,15 @@ void wii_port_configure(const wii_platform_config *config)
         VIDEO_WaitVSync();
     }
 
-    GX_Init(wii_port_gx_fifo, (u32)sizeof(wii_port_gx_fifo));
+    if (!wii_port_gx_fifo) {
+        wii_port_gx_fifo = (unsigned char *)SYS_AllocArena2MemLo(wii_port_gx_fifo_size, 32);
+        if (!wii_port_gx_fifo) {
+            fprintf(stderr, "[WII] GX FIFO allocation failed (%u bytes)\n", (unsigned)wii_port_gx_fifo_size);
+            return;
+        }
+    }
+
+    GX_Init(wii_port_gx_fifo, (u32)wii_port_gx_fifo_size);
     wii_port_video_ready = true;
     GX_SetViewport(0.0f, 0.0f, (float)wii_port_rmode->fbWidth, (float)wii_port_rmode->efbHeight, 0.0f, 1.0f);
     GX_SetScissor(0, 0, wii_port_rmode->fbWidth, wii_port_rmode->efbHeight);
@@ -397,6 +407,18 @@ void wii_port_submit_audio(const int16_t *samples, size_t sample_count)
 #else
     (void)samples;
     (void)sample_count;
+#endif
+}
+
+void *wii_port_mem2_alloc(size_t size, size_t align)
+{
+#ifdef __WII__
+    if (align == 0) align = 32;
+    return SYS_AllocArena2MemLo(size, (u32)align);
+#else
+    (void)size;
+    (void)align;
+    return NULL;
 #endif
 }
 

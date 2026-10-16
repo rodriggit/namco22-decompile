@@ -80,15 +80,17 @@ static bool slurp(const char *dir, const char *name, int frame, void *dst, size_
 
 bool ss22_video_load_dump(const char *dir, int frame)
 {
-    static uint8_t raw[SS22_POLY_WORDS * 4];
+    uint8_t *raw = malloc(SS22_POLY_WORDS * 4u);
+    if (!raw) return false;
     from_capture = true;
     /* the capture has no CPU: draw its list, unless the frame is one MAME drew WITHOUT the master's list (its render_frame_active
      * dropped it: a black 3D layer over the 2D layers) -- <tag>_RENDER_NOLIST=1 says so, see tools/vid_gate.sh */
     { char v[64]; snprintf(v, sizeof v, "%s_RENDER_NOLIST", g_ss22_game->tag);
       const char *nl = getenv(v); if (!(nl && *nl == '1')) eng_frame_force_walk(); }
-    if (!slurp(dir, "polyraw", frame, raw, sizeof raw)) return false;
+    if (!slurp(dir, "polyraw", frame, raw, SS22_POLY_WORDS * 4u)) { free(raw); return false; }
     for (uint32_t i = 0; i < SS22_POLY_WORDS; i++)         /* the share's own words, big-endian, upper bytes intact */
         g_ss22.poly[i] = (uint32_t)raw[i * 4] << 24 | raw[i * 4 + 1] << 16 | raw[i * 4 + 2] << 8 | raw[i * 4 + 3];
+    free(raw);
     uint8_t b16[16], czb[512];
     bool ok = slurp(dir, "pal", frame, g_ss22.pal, sizeof g_ss22.pal) && slurp(dir, "mix", frame, g_ss22.mixer, sizeof g_ss22.mixer) &&
               slurp(dir, "cgram", frame, g_ss22.cgram, sizeof g_ss22.cgram) && slurp(dir, "text", frame, g_ss22.text, sizeof g_ss22.text) &&

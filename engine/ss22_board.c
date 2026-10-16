@@ -12,6 +12,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#if defined(__WII__) || defined(__wii__)
+#include <ogc/system.h>
+#endif
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>                      /* MoveFileExA (the EEPROM save) */
@@ -46,7 +49,23 @@ void (*g_ss22_snd_set_run)(bool run);
 uint32_t g_ss22_wram_watch_off = ~0u;
 void (*g_ss22_wram_watch)(uint32_t v, int size);
 
+#if defined(__WII__) || defined(__wii__)
+ss22_sys_t *g_ss22_ptr;
+static bool ss22_sys_bootstrap(void)
+{
+    if (g_ss22_ptr) return true;
+    g_ss22_ptr = (ss22_sys_t *)SYS_AllocArena2MemLo(sizeof(ss22_sys_t), 32);
+    if (!g_ss22_ptr) {
+        fprintf(stderr, "[WII] cannot allocate ss22 state in MEM2 (%u bytes)\n", (unsigned)sizeof(ss22_sys_t));
+        return false;
+    }
+    memset(g_ss22_ptr, 0, sizeof(*g_ss22_ptr));
+    return true;
+}
+#else
 ss22_sys_t g_ss22;
+static bool ss22_sys_bootstrap(void) { return true; }
+#endif
 #ifdef RR_TRACE
 uint32_t g_ss22_last_pc;                           /* the last instruction the trace hook saw (named in an unmapped-access report) */
 #endif
@@ -415,10 +434,15 @@ static void ss22_mbox_log(uint32_t off, int size, uint32_t v)
 
 void ss22_mbox_note(uint32_t frame, uint32_t a, uint8_t v) { if (mbox_f) fprintf(mbox_f, "%u MCU %x %x\n", frame, a, v); }
 void ss22_board_use(const ss22_board_cfg *c) { cfg = c; }
-bool ss22_load_program(const char *rom_dir) { return cfg->load_program(rom_dir); }
+bool ss22_load_program(const char *rom_dir)
+{
+    if (!ss22_sys_bootstrap()) return false;
+    return cfg->load_program(rom_dir);
+}
 
 bool ss22_hw_init(const char *rom_dir)
 {
+    if (!ss22_sys_bootstrap()) return false;
     char v[64];
     snprintf(v, sizeof v, "%s_MBOXLOG", cfg->tag);
     { const char *m = getenv(v); if (m && (mbox_f = fopen(m, "w"))) g_ss22_mbox = 1; }

@@ -37,6 +37,15 @@
 static const ss22_host_game *game;
 static bool paused, shot_pending, headless_open, restart_req;
 static wii_platform_input wii_input;
+static uint16_t *wii_frame_buffer;
+static int16_t wii_audio_buffer[2048];
+static wii_platform_frame wii_frame = {
+    .width = 640,
+    .height = 480,
+    .pitch = 640 * sizeof(uint16_t),
+    .format = WII_FRAME_FORMAT_RGB565,
+    .pixels = NULL,
+};
 
 bool ss22_host_active(void) { return true; }
 bool ss22_host_restart_requested(void) { return false; }
@@ -63,6 +72,16 @@ bool ss22_host_open(const ss22_host_game *g, int scale, bool fs)
         };
         wii_port_configure(&cfg);
         wii_port_setup_audio(&audio);
+    }
+    if (!wii_frame_buffer) {
+        const size_t fb_bytes = (size_t)wii_frame.width * (size_t)wii_frame.height * sizeof(uint16_t);
+        wii_frame_buffer = (uint16_t *)wii_port_mem2_alloc(fb_bytes, 32);
+        if (!wii_frame_buffer) {
+            fprintf(stderr, "[WII] host frame buffer allocation failed (%u bytes), falling back to blank frame\n", (unsigned)fb_bytes);
+        } else {
+            memset(wii_frame_buffer, 0, fb_bytes);
+            wii_frame.pixels = wii_frame_buffer;
+        }
     }
     memset(&wii_input, 0, sizeof(wii_input));
     fprintf(stderr, "[WII] host stub initialized for %s\n", game ? game->title : "Time Crisis");
@@ -94,19 +113,9 @@ bool ss22_host_pointer(float *nx, float *ny, bool *inside)
 
 bool ss22_host_frame(void)
 {
-    static uint16_t frame_buffer[640 * 480];
-    static int16_t audio_buffer[2048] = {0};
-    static wii_platform_frame frame = {
-        .width = 640,
-        .height = 480,
-        .pitch = 640 * sizeof(uint16_t),
-        .format = WII_FRAME_FORMAT_RGB565,
-        .pixels = frame_buffer,
-    };
-
     wii_port_poll_input(&wii_input);
-    wii_port_submit_audio(audio_buffer, sizeof(audio_buffer) / sizeof(audio_buffer[0]));
-    wii_port_submit_frame(&frame);
+    wii_port_submit_audio(wii_audio_buffer, sizeof(wii_audio_buffer) / sizeof(wii_audio_buffer[0]));
+    wii_port_submit_frame(&wii_frame);
     return true;
 }
 

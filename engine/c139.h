@@ -33,7 +33,11 @@
 #include <stdbool.h>
 
 #define C139_FRAME_MAX  0x100            /* words in one transfer (Tokyo Wars sends 0x46) */
+#if defined(__WII__) || defined(__wii__)
+#define C139_QUEUE      8                /* Wii: keep footprint low (no network link target) */
+#else
 #define C139_QUEUE      64               /* frames held each way */
+#endif
 
 typedef struct c139_frame {
     uint16_t n;                          /* words */
