@@ -6,7 +6,12 @@
 #ifndef ENG_SS22_HOST_H
 #define ENG_SS22_HOST_H
 #include <stdbool.h>
+#ifdef __WII__
+typedef struct SDL_Window SDL_Window;
+typedef struct SDL_Event SDL_Event;
+#else
 #include <SDL2/SDL.h>
+#endif
 #include "eng_ui.h"
 
 typedef struct {

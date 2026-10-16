@@ -93,5 +93,6 @@ __pycache__/
 /cybsled/cs21.nv
 /cybsled/cs21.nv.tmp
 /cybsled/screenshots/
+/.vscode/
 *.log
 *.ppm

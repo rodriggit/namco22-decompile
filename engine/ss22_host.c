@@ -13,7 +13,9 @@
 #include <string.h>
 #include <time.h>
 #include <sys/stat.h>
+#ifndef __WII__
 #include <SDL2/SDL.h>
+#endif
 #include "eng_gl.h"
 #include "render_target.h"
 #include "ss22_gl.h"
@@ -28,6 +30,77 @@
 #include "eng_ffb.h"
 #include "gl_warn.h"
 
+
+#if defined(__WII__) || defined(__wii__)
+#include "../timecris/wii/port.h"
+
+static const ss22_host_game *game;
+static bool paused, shot_pending, headless_open, restart_req;
+static wii_platform_input wii_input;
+
+bool ss22_host_active(void) { return true; }
+bool ss22_host_restart_requested(void) { return false; }
+
+bool ss22_host_open(const ss22_host_game *g, int scale, bool fs)
+{
+    (void)scale; (void)fs;
+    game = g;
+    wii_port_init();
+    {
+        const wii_platform_config cfg = {
+            .width = 640,
+            .height = 480,
+            .refresh_hz = 60,
+            .ir_enabled = true,
+            .audio_enabled = true,
+        };
+        wii_port_configure(&cfg);
+    }
+    memset(&wii_input, 0, sizeof(wii_input));
+    fprintf(stderr, "[WII] host stub initialized for %s\n", game ? game->title : "Time Crisis");
+    return true;
+}
+
+bool ss22_host_open_headless(void)
+{
+    headless_open = true;
+    return true;
+}
+
+bool ss22_host_pointer(float *nx, float *ny, bool *inside)
+{
+    wii_port_poll_input(&wii_input);
+
+    if (wii_input.offscreen) {
+        if (nx) *nx = 0.5f;
+        if (ny) *ny = 0.5f;
+        if (inside) *inside = false;
+        return true;
+    }
+
+    if (nx) *nx = (float)wii_input.gun_x / 1024.0f;
+    if (ny) *ny = (float)wii_input.gun_y / 768.0f;
+    if (inside) *inside = true;
+    return true;
+}
+
+bool ss22_host_frame(void)
+{
+    wii_port_poll_input(&wii_input);
+    return true;
+}
+
+void ss22_host_shot(const char *path)
+{
+    (void)path;
+}
+
+void ss22_host_close(void)
+{
+    wii_port_shutdown();
+}
+
+#else
 
 static const ss22_host_game *game;
 static SDL_Window *win;
@@ -311,3 +384,4 @@ void ss22_host_close(void)
     if (win) SDL_DestroyWindow(win);
     win = NULL; glc = NULL;
 }
+#endif

@@ -17,7 +17,13 @@
  */
 #ifndef ENG_UI_H
 #define ENG_UI_H
+#ifdef __WII__
+typedef struct SDL_Window SDL_Window;
+typedef struct SDL_Event SDL_Event;
+typedef int SDL_Scancode;
+#else
 #include <SDL2/SDL.h>
+#endif
 #include <stdbool.h>
 #include <stddef.h>
 

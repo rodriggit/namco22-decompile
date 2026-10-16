@@ -25,7 +25,9 @@
 #include <sys/stat.h>
 #include "win_startup.h"
 #include "romzip.h"
+#ifndef __WII__
 #include <SDL2/SDL.h>
+#endif
 #ifndef _WIN32
 #include <unistd.h>
 #endif
