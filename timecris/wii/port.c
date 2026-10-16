@@ -5,7 +5,7 @@
 
 #ifdef __WII__
 #include <gccore.h>
-#include <ogc/ax.h>
+#include <asndlib.h>
 #include <ogc/gx.h>
 #include <ogc/pad.h>
 #include <wiiuse/wpad.h>
@@ -42,9 +42,8 @@ static void wii_port_start_ax(void)
         return;
     }
 
-    AX_Init();
-    AXSetMasterVolume(0x7fff);
-    AX_Pause(0);
+    ASND_Init();
+    ASND_Pause(0);
     wii_port_ax_started = true;
     wii_port_audio_ready = true;
 #endif
@@ -54,6 +53,7 @@ static void wii_port_start_ax(void)
 static void *wii_port_xfb[2] = { NULL, NULL };
 static u32 wii_port_fbb = 0;
 static GXRModeObj *wii_port_rmode = NULL;
+static unsigned char wii_port_gx_fifo[256 * 1024] __attribute__((aligned(32)));
 static int16_t wii_port_audio_ring[4096];
 static size_t wii_port_audio_count = 0;
 static size_t wii_port_audio_head = 0;
@@ -131,8 +131,8 @@ void wii_port_shutdown(void)
 {
 #ifdef __WII__
     if (wii_port_audio_ready) {
-        AX_Pause(0);
-        AXSetMasterVolume(0);
+        ASND_Pause(1);
+        ASND_End();
         wii_port_audio_ready = false;
     }
     if (wii_port_video_ready) {
@@ -147,7 +147,6 @@ void wii_port_shutdown(void)
     wii_port_xfb[1] = NULL;
     wii_port_rmode = NULL;
     WPAD_Shutdown();
-    PAD_Shutdown();
     wii_port_ready = false;
     printf("[WII] platform shutdown\n");
 #else
@@ -193,7 +192,7 @@ void wii_port_configure(const wii_platform_config *config)
         VIDEO_WaitVSync();
     }
 
-    GX_Init();
+    GX_Init(wii_port_gx_fifo, (u32)sizeof(wii_port_gx_fifo));
     wii_port_video_ready = true;
     GX_SetViewport(0.0f, 0.0f, (float)wii_port_rmode->fbWidth, (float)wii_port_rmode->efbHeight, 0.0f, 1.0f);
     GX_SetScissor(0, 0, wii_port_rmode->fbWidth, wii_port_rmode->efbHeight);
@@ -210,7 +209,7 @@ void wii_port_configure(const wii_platform_config *config)
     }
 
     if (config->ir_enabled) {
-        WPAD_SetDataFormat(WPAD_CHAN_0, WPAD_FMT_0);
+        WPAD_SetDataFormat(WPAD_CHAN_0, WPAD_FMT_BTNS_ACC_IR);
         WPAD_SetVRes(WPAD_CHAN_0, wii_port_width, wii_port_height);
     }
 
@@ -283,9 +282,10 @@ void wii_port_poll_input(wii_platform_input *input)
     input->test = (wpad_buttons & WPAD_BUTTON_HOME) != 0;
     input->pedal = (wpad_buttons & WPAD_BUTTON_1) != 0 || (pad_buttons & PAD_BUTTON_B) != 0;
 
-    if (WPADData[pad_chan].ir.valid) {
-        input->gun_x = (uint16_t)WPADData[pad_chan].ir.x;
-        input->gun_y = (uint16_t)WPADData[pad_chan].ir.y;
+    WPADData *wd = WPAD_Data(pad_chan);
+    if (wd && wd->ir.valid) {
+        input->gun_x = (uint16_t)wd->ir.x;
+        input->gun_y = (uint16_t)wd->ir.y;
         input->offscreen = false;
     } else {
         input->offscreen = true;
@@ -393,8 +393,7 @@ void wii_port_submit_audio(const int16_t *samples, size_t sample_count)
         }
     }
 
-    AX_Pause(0);
-    AXSetMasterVolume(0x7fff);
+    ASND_Pause(0);
 #else
     (void)samples;
     (void)sample_count;

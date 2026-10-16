@@ -9,6 +9,12 @@
 typedef SOCKET lk_sock;
 #define LK_BAD INVALID_SOCKET
 #define lk_close closesocket
+#define LK_HAS_NETWORK 1
+#elif defined(__WII__) || defined(__wii__)
+typedef int lk_sock;
+#define LK_BAD (-1)
+#define lk_close(s) ((void)(s))
+#define LK_HAS_NETWORK 0
 #else
 #include <unistd.h>
 #include <fcntl.h>
@@ -19,6 +25,7 @@ typedef SOCKET lk_sock;
 typedef int lk_sock;
 #define LK_BAD (-1)
 #define lk_close close
+#define LK_HAS_NETWORK 1
 #endif
 #include "ss22_link.h"
 #include "ss22_board.h"
@@ -150,28 +157,44 @@ static double now_s(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t
 
 static void send_to(int cab, const uint8_t *m, int n)
 {
+#if LK_HAS_NETWORK
     struct sockaddr_in a; memset(&a, 0, sizeof a);
     a.sin_family = AF_INET; a.sin_port = htons((uint16_t)(port_base + cab)); a.sin_addr.s_addr = htonl(0x7F000001u);
     sendto(sock, (const char *)m, (size_t)n, 0, (struct sockaddr *)&a, sizeof a);
+#else
+    (void)cab; (void)m; (void)n;
+#endif
 }
 static void send_data(int cab, int slot)
 {
+#if LK_HAS_NETWORK
     uint8_t m[SS22_LINK_PAYLOAD_MAX + 16];
     memcpy(m, "S2LK", 4); m[4] = MSG_DATA; m[5] = (uint8_t)me;
     uint32_t f = hist[slot].frame; m[6] = (uint8_t)f; m[7] = (uint8_t)(f >> 8); m[8] = (uint8_t)(f >> 16); m[9] = (uint8_t)(f >> 24);
     memcpy(&m[10], hist[slot].data, (size_t)hist[slot].n);
     send_to(cab, m, 10 + hist[slot].n);
+#else
+    (void)cab; (void)slot;
+#endif
 }
 static void send_req(int cab, uint32_t f)
 {
+#if LK_HAS_NETWORK
     uint8_t m[10]; memcpy(m, "S2LK", 4); m[4] = MSG_REQ; m[5] = (uint8_t)me;
     m[6] = (uint8_t)f; m[7] = (uint8_t)(f >> 8); m[8] = (uint8_t)(f >> 16); m[9] = (uint8_t)(f >> 24);
     send_to(cab, m, 10); n_reqs++;
+#else
+    (void)cab; (void)f;
+#endif
 }
 
 /* everything waiting on the socket; wait up to `ms` for the first datagram */
 static void pump(int ms)
 {
+#if !LK_HAS_NETWORK
+    (void)ms;
+    return;
+#else
 #ifndef _WIN32
     struct pollfd pf = { sock, POLLIN, 0 };
     if (ms > 0 && poll(&pf, 1, ms) <= 0) return;
@@ -192,10 +215,14 @@ static void pump(int ms)
             if (hist[s].have && hist[s].frame == f) { send_data(from, s); n_resent++; }
         }
     }
+#endif
 }
 
 static bool udp_open(void)
 {
+#if !LK_HAS_NETWORK
+    return false;
+#else
 #ifdef _WIN32
     WSADATA w; if (WSAStartup(MAKEWORD(2, 2), &w)) return false;
 #endif
@@ -211,10 +238,15 @@ static bool udp_open(void)
     fcntl(sock, F_SETFL, fcntl(sock, F_GETFL, 0) | O_NONBLOCK);
 #endif
     return true;
+#endif
 }
 
 static void udp_frame(uint32_t f)
 {
+#if !LK_HAS_NETWORK
+    (void)f;
+    return;
+#else
     int s = (int)(f % HIST);
     hist[s].n = ss22_link_pack(hist[s].data, SS22_LINK_PAYLOAD_MAX); hist[s].frame = f; hist[s].have = true;
     for (int c = 0; c < SS22_LINK_MAX_CABS; c++) if (c != me && (cab_mask & (1u << c))) send_data(c, s);
@@ -250,6 +282,7 @@ static void udp_frame(uint32_t f)
     double w = now_s() - t0; if (w > 0.001) { n_waits++; wait_s += w; }
     ss22_link_unpack(pred, got[pred][s].data, got[pred][s].n);
     got[pred][s].have = false;
+#endif
 }
 
 void ss22_link_frame(uint32_t f)
@@ -276,6 +309,12 @@ bool ss22_link_setup(const char *spec, const char *tag)
     if (k < 1 || id < 0 || id >= SS22_LINK_MAX_CABS || (k >= 2 && (n < 1 || n > SS22_LINK_MAX_CABS || id >= n))) {
         fprintf(stderr, "[%s] --link %s: expected ID/N[:PORT][:free]\n", tag, spec); return false; }
     me = id; ncab = k >= 2 ? n : 1;
+#if !LK_HAS_NETWORK
+    if (ncab > 1) {
+        fprintf(stderr, "[%s] link: multi-cab transport is not available on this platform build\n", tag);
+        return false;
+    }
+#endif
     if (k >= 3 && port > 0) port_base = port;
     if (strstr(spec, ":free")) lockstep = 0;
     cab_mask = (1u << ncab) - 1;

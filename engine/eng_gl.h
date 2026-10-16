@@ -8,6 +8,8 @@
 #endif
 #if !defined(__WII__) && !defined(__wii__)
 #include <GL/gl.h>
+#else
+typedef unsigned int GLuint;
 #endif
 #ifndef GL_CLAMP_TO_EDGE
 #define GL_CLAMP_TO_EDGE 0x812F

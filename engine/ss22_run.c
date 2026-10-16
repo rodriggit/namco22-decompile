@@ -38,6 +38,33 @@
 const ss22_game *g_ss22_game;
 static char **g_argv;
 
+static void ss22_show_error_box(const char *title, const char *msg)
+{
+#if defined(__WII__) || defined(__wii__)
+    fprintf(stderr, "[%s] %s\n", title ? title : "ERROR", msg ? msg : "");
+#else
+    SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, title, msg, NULL);
+#endif
+}
+
+static char *ss22_get_base_path(void)
+{
+#if defined(__WII__) || defined(__wii__)
+    return NULL;
+#else
+    return SDL_GetBasePath();
+#endif
+}
+
+static void ss22_free_base_path(char *base)
+{
+#if defined(__WII__) || defined(__wii__)
+    (void)base;
+#else
+    SDL_free(base);
+#endif
+}
+
 /* ENG_FTIME=1: per-frame wall-clock split, printed every 60 frames --
  * total = cpu (68K+DSP+sound, everything outside the video calls) + prepare
  * (ss22_video_prepare: geometry, clip, bakes, batching) + host (ss22_host_frame:
@@ -147,7 +174,7 @@ static void on_fatal(const char *why)
     snprintf(msg, sizeof msg, "%s stopped: the game reached code that has not been translated yet.\n\n%s\n\n"
              "Please report it with %s%s%s -- that file replays this session up to the crash.",
              g_ss22_game->name, why, g_ss22_game->logname, fatal_rec ? " and " : "", fatal_rec ? fatal_rec : "");
-    SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, g_ss22_game->name, msg, NULL);
+    ss22_show_error_box(g_ss22_game->name, msg);
 }
 static void rep_read(void)
 {
@@ -504,7 +531,7 @@ int ss22_main(int argc, char **argv, const ss22_game *g)
      * packages and the Windows build are set up; chips unzipped loose into roms/ work too. */
     if (eng_romzip_missing(rom_dir, g->roms, g->n_roms) && !strcmp(rom_dir, "extracted") && !eng_romzip_missing("roms", g->roms, g->n_roms)) rom_dir = "roms";
     if (eng_romzip_missing(rom_dir, g->roms, g->n_roms)) {
-        char err[512], *base = SDL_GetBasePath();
+        char err[512], *base = ss22_get_base_path();
         const char *zips[8] = { g->zip };
         int nz = 1;
         for (int i = 0; g->more_zips && g->more_zips[i] && nz < 8; i++) zips[nz++] = g->more_zips[i];
@@ -514,12 +541,12 @@ int ss22_main(int argc, char **argv, const ss22_game *g)
                 char msg[1024];
                 snprintf(msg, sizeof msg, "%s needs its ROMs.\n\nPut %s (the MAME ROM set) in the \"roms\" "
                          "folder next to this program, then start it again.\n\n(%s)", g->name, g->zip, err);
-                SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, g->name, msg, NULL);
+                ss22_show_error_box(g->name, msg);
             }
-            SDL_free(base);
+            ss22_free_base_path(base);
             return 2;
         }
-        SDL_free(base);
+        ss22_free_base_path(base);
     }
     if (shot_dir) mkdir(shot_dir, 0755);                /* --shots DIR: make the folder */
     if (rd_dir) {                                       /* the renderer gate: MAME's state, no emulation */

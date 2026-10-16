@@ -9,6 +9,62 @@
  *   4. the text tilemap over that
  *   5. the mixer's gamma tables over the whole frame
  */
+#include "ss22_gl.h"
+
+#if defined(__WII__) || defined(__wii__)
+
+void ss22_gl_set_hud(const eng_hud_cfg *h)
+{
+    (void)h;
+}
+
+void ss22_gl_set_gun_flash(bool on)
+{
+    (void)on;
+}
+
+void ss22_prepare(const ss22_regs *r)
+{
+    (void)r;
+}
+
+void ss22_draw(int vw, int vh)
+{
+    (void)vw;
+    (void)vh;
+}
+
+int ss22_quads(void)
+{
+    return 0;
+}
+
+int ss22_sprites(void)
+{
+    return 0;
+}
+
+void eng_gl_context_attributes(void)
+{
+}
+
+bool eng_gl_open_headless(int w, int h)
+{
+    (void)w;
+    (void)h;
+    return false;
+}
+
+bool eng_gl_write_ppm(const char *path, int vw, int vh)
+{
+    (void)path;
+    (void)vw;
+    (void)vh;
+    return false;
+}
+
+#else
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -23,7 +79,6 @@
 #include "fog_hw.h"
 #include "text_hw.h"
 #include "sprite_hw.h"
-#include "ss22_gl.h"
 #include "hud_edges.h"
 
 #define NW ENG_SCREEN_W
@@ -584,3 +639,5 @@ bool eng_gl_write_ppm(const char *path, int vw, int vh)
     free(px);
     return true;
 }
+
+#endif

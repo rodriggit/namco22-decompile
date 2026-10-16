@@ -46,6 +46,7 @@ ap.add_argument('--func')
 ap.add_argument('--attribute', nargs='+', help='DEV: C71_COV triple files -> the committed "ADDR TAG" coverage on stdout')
 ap.add_argument('--main-rom', help='rr: the assembled 68K program (raverace_main.bin)')
 ap.add_argument('--block', action='append', default=[], help='count-word address of a program block (hex); default: the game program')
+ap.add_argument('--split', type=int, default=1, help='emit the translation as N .c files (OUT, OUT_p1.c, ...) of per-256-address chunk functions, so GCC compiles them in parallel and never holds one giant function; 1 = one file (still chunked)')
 a = ap.parse_args()
 
 # ---- the program image, from the ROM files -------------------------------------
@@ -281,28 +282,57 @@ w('        } \\')
 w('        d->ops = NULL; return true; \\')
 w('    } while (0)')
 w('')
-w(f'bool {a.func}(c71_t *d, int pc)')
-w('{')
-w('    switch (pc) {')
-for pc in sorted(ins):
-    w(f'    case 0x{pc:04X}:')
-    for op, op2 in sorted(variants[pc]):
-        if op2 is not None:
-            w(f'        if (d->prog[0x{pc:04X}] == 0x{op:04X} && d->prog[0x{(pc + 1) & 0xFFFF:04X}] == 0x{op2:04X}) {{')
-            w(f'            static const uint16_t o[2] = {{ 0x{op:04X}, 0x{op2:04X} }}; RUN(0x{pc:04X}, 0x{op:04X}, o); }}')
-        else:
-            w(f'        if (d->prog[0x{pc:04X}] == 0x{op:04X}) RUN(0x{pc:04X}, 0x{op:04X}, NULL);')
-    w('        return trap(d, pc, "program memory holds no translated program here");')
-w('    default: return trap(d, pc, "no translation for this address");')
-w('    }')
-w('}')
+# One function per 256 program addresses instead of one switch over every address: the same cases, the same checks, the same
+# traps, but GCC optimizes (and frees) each function on its own. Chunk functions have external linkage + noinline so GCC cannot
+# fold them back into the dispatcher (a static function called once is inlined at -O1 and above).
+pre = list(out)
+chunks = {}
+for pc in sorted(ins): chunks.setdefault(pc >> 8, []).append(pc)
+his = sorted(chunks)
+cname = lambda hi: f'{a.func}_c{hi:02X}'
+
+def emit_chunk(hi):
+    L = [f'__attribute__((noinline)) bool {cname(hi)}(c71_t *d, int pc)', '{', '    switch (pc) {']
+    for pc in chunks[hi]:
+        L.append(f'    case 0x{pc:04X}:')
+        for op, op2 in sorted(variants[pc]):
+            if op2 is not None:
+                L.append(f'        if (d->prog[0x{pc:04X}] == 0x{op:04X} && d->prog[0x{(pc + 1) & 0xFFFF:04X}] == 0x{op2:04X}) {{')
+                L.append(f'            static const uint16_t o[2] = {{ 0x{op:04X}, 0x{op2:04X} }}; RUN(0x{pc:04X}, 0x{op:04X}, o); }}')
+            else:
+                L.append(f'        if (d->prog[0x{pc:04X}] == 0x{op:04X}) RUN(0x{pc:04X}, 0x{op:04X}, NULL);')
+        L.append('        goto miss;')
+    L += ['    default: return trap(d, pc, "no translation for this address");', '    }',
+          'miss:', '    return trap(d, pc, "program memory holds no translated program here");', '}', '']
+    return L
+
+nparts = max(1, min(a.split, len(his)))
+parts = [his[k::nparts] for k in range(nparts)]
+stem, ext = os.path.splitext(a.out)
+paths = [a.out] + [f'{stem}_p{k}{ext}' for k in range(1, nparts)]
 os.makedirs(os.path.dirname(os.path.abspath(a.out)), exist_ok=True)
-open(a.out, 'w').write('\n'.join(out) + '\n')
+import glob
+for old in glob.glob(f'{stem}_p*{ext}'):
+    if old not in paths: os.remove(old)         # leftovers of an earlier, wider --split
+
+for k in range(1, nparts):
+    body = pre + [''] + [l for hi in parts[k] for l in emit_chunk(hi)]
+    open(paths[k], 'w').write('\n'.join(body) + '\n')
+
+main = pre + ['']
+main += [f'bool {cname(hi)}(c71_t *d, int pc);' for hi in his if hi not in parts[0]]
+main += ['']
+for hi in parts[0]: main += emit_chunk(hi)
+main += [f'bool {a.func}(c71_t *d, int pc)', '{', '    switch ((unsigned)pc >> 8) {']
+main += [f'    case 0x{hi:02X}: return {cname(hi)}(d, pc);' for hi in his]
+main += ['    default: return trap(d, pc, "no translation for this address");', '    }', '}']
+open(a.out, 'w').write('\n'.join(main) + '\n')
 # BIOS sites (the same c71.bin in every game) are data-driven and covered by every game's coverage: one summary line.
 # A site in a GAME program with no readable table is a real gap in a coverage-only translation: named.
 bios_open = [f'{kind} {site:04X}' for tag, kind, site, n in dispatch if n == 0 and tag == 'bios']
 if bios_open: print(f'c25_translate: note: {len(bios_open)} BIOS BACC/CALA sites have no table this tool can read (coverage only): ' + ', '.join(bios_open), file=sys.stderr)
 for tag, kind, site, n in dispatch:
     if n == 0 and tag != 'bios': print(f'c25_translate: WARNING: {kind} at {tag}:{site:04X} has no table this tool can read -- its targets come from coverage only', file=sys.stderr)
-print(f'c25_translate: {a.game}: {len(ins)} addresses, {sum(len(v) for v in variants.values())} variants ({n_cov} covered, {static} static) -> {a.out}',
+outs = ', '.join(paths)
+print(f'c25_translate: {a.game}: {len(ins)} addresses, {sum(len(v) for v in variants.values())} variants ({n_cov} covered, {static} static) -> {", ".join(paths)}',
       file=sys.stderr)

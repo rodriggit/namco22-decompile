@@ -287,3 +287,4 @@ static inline void eng_vsync_after_frame(eng_vsync *v, SDL_Window *win)
 /* a frame that always swapped (callers that do not ask eng_vsync_show) */
 static inline void eng_vsync_after_swap(eng_vsync *v) { v->shown = true; eng_vsync_after_frame(v, NULL); }
 #endif
+#endif
