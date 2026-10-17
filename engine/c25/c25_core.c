@@ -97,6 +97,8 @@ static long tim_ff(c71_t *d, long n, long gran)
  * TINT_PEND (see c71_step): nothing retires, no hook runs, no counter moves -- so the halt fast-forwards. */
 static long idle_skip(c71_t *d, long n) { return tim_ff(d, n, 1); }
 
+uint64_t g_c25_spin_skipped;                                /* steps spin_skip fast-forwarded (the Wii's [WII-EMU] line) */
+
 #ifndef C25_DEV_HOOKS
 /* Busy-wait fast-forward (d->spin_pc, engine/c25/c25.h): a "LAC *mem / BNEZ self" pair polling a
  * word only the host changes (between run calls). While the word reads nonzero the loop body --
@@ -121,6 +123,7 @@ static long spin_skip(c71_t *d, long n)
     if (!m) return 0;
     d->acc = (int32_t)(uint32_t)v;                          /* each iteration's LAC leaves ACC = the word */
     d->steps += (uint64_t)m;
+    g_c25_spin_skipped += (uint64_t)m;
     return m;
 }
 #endif

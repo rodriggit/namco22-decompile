@@ -103,6 +103,15 @@ void wii_port_submit_audio(const int16_t *samples, size_t sample_count);
 void *wii_port_mem2_alloc(size_t size, size_t align);
 /* Free MEM1/MEM2 arena bytes and the largest block malloc can still return, as one log line. */
 void wii_port_mem_report(char *buf, size_t n);
+
+/* GX presentation (engine/ss22_gx.c draws the frame into the EFB): true once the video and the GX FIFO are up. */
+bool wii_port_gx_ready(void);
+/* Copy the EFB to the next XFB, wait for the GPU, flip at the next vsync. */
+void wii_port_gx_present(void);
+/* One printf-style line appended to the boot log (wii_boot.log, next to the ROM folders): the only log a player can read. */
+void wii_port_log(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+/* Microseconds since an arbitrary start (the PowerPC time base), for the per-stage timings in the log. */
+uint64_t wii_port_usec(void);
 bool wii_port_load_rom(const char *path, void *buffer, size_t size);
 const char *wii_port_storage_root(void);
 

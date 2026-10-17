@@ -200,7 +200,9 @@ void c352_generate(c352_t *c, int16_t *out, int n)
             c352_voice_t *v = &c->voice[j];
             int16_t s = 0;
 
-            if (v->flags & C352_FLG_BUSY) {
+            /* an idle voice outputs 0 whatever its volumes, and only a busy one ramps them: skipping it changes nothing */
+            if (!(v->flags & C352_FLG_BUSY)) continue;
+            {
                 uint32_t next_counter = v->counter + v->freq;
 
                 if (next_counter & 0x10000)

@@ -412,6 +412,10 @@ void rr_tick(void)
         { static long stuck; extern uint32_t rr_trace_pc; extern void rr_dump_shadow(void); if (++stuck % 200000 == 0) { fprintf(stderr, "[RR] still inside an interrupt handler after %ld slices: pc %06X, frame %u\n", stuck, rr_trace_pc, rr_frame); rr_dump_shadow(); } }
 #endif
         rr_budget = 1000; return; }
+#if defined(__WII__) || defined(__wii__)
+    static uint64_t wii_dsp_us, wii_snd_us;             /* where the emulation's time goes, into the boot log (the 68K is what is left) */
+    const uint64_t wii_t0 = wii_port_usec();
+#endif
     g_ss22_in_vblank = vblank_slices > 0;
     if (vblank_slices > 0) {                            /* VTOTAL 525, VBSTART 480: the vblank is the first 45/525 of a frame after the */
         long full = dsp_steps_per_frame / SLICES;       /* screen update, ~1.37 of our slices; split the slice at VBEND. The master answers */
@@ -424,7 +428,23 @@ void rr_tick(void)
         vblank_slices--;
     } else
         ss22_dsp_run(dsp_steps_per_frame / SLICES);       /* the master DSP runs beside the 68K */
+#if defined(__WII__) || defined(__wii__)
+    const uint64_t wii_t1 = wii_port_usec();
+    wii_dsp_us += wii_t1 - wii_t0;
+#endif
     ss22_snd_slice();                                     /* and so does the sound MCU (ports, A-D, the C352) */
+#if defined(__WII__) || defined(__wii__)
+    wii_snd_us += wii_port_usec() - wii_t1;
+    if ((slice + 1) % SLICES == 0 && (rr_frame + 1) % 120 == 0) {
+        extern uint64_t g_wii_chip_us;                    /* the C352's share of the sound (engine/ss22_snd.c) */
+        extern uint64_t g_c25_spin_skipped;               /* DSP steps the busy-wait fast-forward passed (engine/c25/c25_core.c) */
+        wii_port_log("[WII-EMU] frame %u: ms per frame dsp %.1f sound %.1f (C352 %.1f) | dsp steps per frame %ld, %.0f of them a skipped poll "
+                     "(%d slices a frame; the 68K is emu - prep - dsp - sound)",
+                     rr_frame + 1, wii_dsp_us / 120000.0, wii_snd_us / 120000.0, g_wii_chip_us / 120000.0, (long)dsp_steps_per_frame,
+                     g_c25_spin_skipped / 120.0, SLICES);
+        wii_dsp_us = wii_snd_us = 0; g_wii_chip_us = 0; g_c25_spin_skipped = 0;
+    }
+#endif
     if (g_ss22_link_on) ss22_link_slice();                /* --link: the C139's clock and its interrupt (engine/ss22_link.c) */
     if ((serial_acc += 100) >= 60 * SLICES) { serial_acc -= 60 * SLICES; ss22_dsp_serial(); }
     if (++slice % SLICES) return;

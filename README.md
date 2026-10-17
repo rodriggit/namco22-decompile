@@ -4,16 +4,16 @@ A fork of [namco22-decompile](https://github.com/spacestate1/namco22-decompile),
 22 / 23 arcade games in C for PC. This fork ports **Time Crisis** (Namco, 1995, Super System 22) to the **Nintendo Wii**, as a
 native PowerPC program built with devkitPro.
 
-> **Status: first working version, in progress.**
+> **Status: playable, in progress.**
 >
 > | Part | Status |
 > |---|---|
 > | Boot, loading the ROMs from the SD card | ✅ Works |
-> | 2D graphics (text, sprites, HUD) | ✅ Shown |
-> | 3D graphics (polygons) | ❌ Not drawn yet: the GPU (GX) renderer is still to be written |
+> | 3D graphics (polygons) | ✅ Drawn on the Wii's GPU (GX) |
+> | 2D graphics (text, sprites, HUD) | ✅ Drawn on the GPU, merged with the 3D by depth |
 > | Controls (Wii Remote) | ✅ Work |
-> | Sound | ❌ Not audible yet |
-> | Speed | ⚠️ Well below full speed |
+> | Sound | ❌ Emulated but not played yet |
+> | Speed | ⚠️ About 22–31 fps in gameplay (the arcade runs at 60) |
 >
 > Tested only in the **Dolphin** emulator. Not yet tried on a real Wii.
 
@@ -140,7 +140,9 @@ The **Wii Remote is the gun**: aim with the IR pointer and shoot with the **B** 
 **To reload**, aim **off the screen** and shoot, as on the arcade.
 
 **In Dolphin**, the Wii Remote's buttons are mapped to keyboard keys or a pad in *Controllers → Wii Remote 1 →
-Configure*. The mouse can drive the IR pointer.
+Configure*. The mouse can drive the IR pointer. The game needs **B and the pedal held together** (you shoot while out of
+cover): if shooting stops working while the pedal is held, Dolphin is not passing both inputs at once. Map them to inputs
+that can be pressed together, for example B on the left mouse button and 1 on a key.
 
 ## How the port works
 
@@ -153,16 +155,35 @@ All the Wii-only code is kept apart: what is new lives in `timecris/wii/`, and w
 | `timecris/wii/toolchain-devkitpro.cmake` | The CMake toolchain for devkitPPC |
 | `timecris/wii/check_mem1_segments.cmake` | The memory check after the build |
 | `engine/ss22_host.c`, `engine/ss22_input_wii.c` | The engine's host and controls, Wii versions |
-| `engine/ss22_gl.c` | The renderer. On the Wii it draws the 2D in software today; the 3D is still to come |
+| `engine/ss22_gx.c` | The Wii renderer, on the GPU (GX). The PC version keeps `engine/ss22_gl.c` |
+
+**The renderer.** The polygons' textures are baked into CI8 (8-bit indexed) textures with one RGB565 palette per colour
+group, cached between frames in MEM2. The quads are sorted by depth as the arcade does (it has no depth buffer) and drawn
+with the hardware's shading and depth fog in two TEV stages. Sprites and the text layer are converted to RGB5A3 textures:
+the text only in the 16×16 cells that changed, and a sprite only when something it depends on changed since the last
+frame. The picture is copied from the GPU's framebuffer straight to the screen.
 
 **Memory.** The Wii has 24 MB of MEM1 and 64 MB of MEM2, and the arcade uses large ROM regions. On the Wii the sound keeps
 only its 6 MB of real chips instead of its 16 MB region, and the sprites 12 MB instead of 16. The result is the same: the
 gaps read as zeros, or as the transparent colour for the sprites.
 
-**Still to do**, in order:
-1. Draw the 3D on the Wii's GPU (GX). This is also what should help the speed most.
-2. Show the picture through GX instead of converting it to YCbCr on the CPU.
-3. Play the sound through ASND.
+**Speed.** The Wii's CPU still runs the whole arcade board: the 68020's translated program, the master DSP's translated
+program, the sound CPU and the C352 sound chip, plus the geometry stage that turns the DSP's display list into screen
+polygons. Every 120 frames the game writes where the time went into `wii_boot.log`:
+
+| Line | What it measures |
+|---|---|
+| `[WII-HOST]` | A frame's time: `emu` (the board), `draw` (the renderer), `present` (waiting for the screen), and the fps |
+| `[WII-EMU]` | Inside `emu`: the DSP, and the sound (the C352's share in brackets). The 68K is what is left |
+| `[WII-GX]` | Inside the renderer: polygons, textures, sprites, text, and `prep` (the geometry stage, inside `emu`) |
+
+In gameplay a frame takes about 32–45 ms: geometry 7–9 ms, DSP 6–10 ms, sound 7–8 ms, 68K about 7 ms and drawing 7–10 ms.
+
+**Still to do:**
+1. More speed: the DSP's busy-wait loops (the engine can fast-forward them, but Time Crisis's has not been found yet), the
+   sound CPU and the C352, and the geometry stage.
+2. Play the sound through ASND.
+3. The mixer's gamma, which is not applied yet.
 
 The porting notes are in [WII_PORT_PLAN.md](WII_PORT_PLAN.md).
 

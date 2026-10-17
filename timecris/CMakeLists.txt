@@ -78,9 +78,14 @@ add_custom_command(OUTPUT ${CMAKE_CURRENT_SOURCE_DIR}/gen/tc_snd_driver.c
 set_source_files_properties(gen/tc_snd_driver.c PROPERTIES COMPILE_OPTIONS "-O1;-w")
 
 if(TC_WII_PORT)
+  # the Super 22 layers without ss22_gl.c (OpenGL): the Wii draws the frame with GX (engine/ss22_gx.c)
   set(TC_CORE_SRC src/tc_game.c
       ${NAMCO22_ENGINE_LIFT_SRC} ${NAMCO22_ENGINE_C25_SRC} ${NAMCO22_ENGINE_SND_SRC}
-      ${NAMCO22_ENGINE_SS22_SRC}
+      ${NAMCO22_ENGINE_DIR}/fog_hw.c
+      ${NAMCO22_ENGINE_DIR}/sprite_hw.c
+      ${NAMCO22_ENGINE_DIR}/text_hw.c
+      ${NAMCO22_ENGINE_DIR}/frame_rule.c
+      ${NAMCO22_ENGINE_DIR}/ss22_gx.c
   ${NAMCO22_ENGINE_DIR}/eng.c
     ${NAMCO22_ENGINE_DIR}/geo_hw.c
     ${NAMCO22_ENGINE_DIR}/slave_list.c
@@ -121,7 +126,11 @@ if(TC_WII_PORT)
   )
   add_executable(tc_wii ${TC_CORE_SRC} ${TC_WII_SRC})
   target_compile_definitions(tc_wii PRIVATE __WII__)
+    # -O2: the engine (board, DSP and sound hosts, sprites, text, geometry, the GX renderer) has no -O of its own and the
+    # toolchain sets no build type, so it was built at -O0. The generated sources keep their own -O (set per file above, later
+    # on the command line, so it wins).
     target_compile_options(tc_wii PRIVATE
+        -O2
         -ffunction-sections -fdata-sections
         -fno-unwind-tables -fno-asynchronous-unwind-tables)
     target_link_options(tc_wii PRIVATE -Wl,--gc-sections)

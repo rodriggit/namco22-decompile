@@ -170,6 +170,11 @@ static void wav_header(FILE *f, uint32_t frames)
     fseek(f, 0, SEEK_SET); fwrite(h, 1, 44, f);
 }
 
+#if defined(__WII__) || defined(__wii__)
+uint64_t wii_port_usec(void);
+uint64_t g_wii_chip_us;                          /* time inside c352_generate, for the [WII-EMU] line (engine/ss22_run.c) */
+#endif
+
 /* generate the chip's output up to board time t */
 static void chip_sync(uint64_t t)
 {
@@ -179,7 +184,13 @@ static void chip_sync(uint64_t t)
     while (chip_done < target) {
         uint64_t left = target - chip_done;
         int n = left > 512 ? 512 : (int)left;
+#if defined(__WII__) || defined(__wii__)
+        const uint64_t wii_t0 = wii_port_usec();
         c352_generate(&chip, buf, n);
+        g_wii_chip_us += wii_port_usec() - wii_t0;
+#else
+        c352_generate(&chip, buf, n);
+#endif
         chip_done += (uint64_t)n;
         if (out_live) eng_audio_push(buf, n);
         if (dump) {

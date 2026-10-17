@@ -1,11 +1,13 @@
 #include "port.h"
 
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 #ifdef __WII__
 #include <gccore.h>
+#include <ogc/lwp_watchdog.h>
 #include <asndlib.h>
 #include <fat.h>
 #include <ogc/gx.h>
@@ -417,7 +419,12 @@ void wii_port_configure(const wii_platform_config *config)
     GX_SetScissor(0, 0, wii_port_rmode->fbWidth, wii_port_rmode->efbHeight);
     GX_SetDispCopyGamma(GX_GM_1_0);
     GX_SetDispCopySrc(0, 0, wii_port_rmode->fbWidth, wii_port_rmode->efbHeight);
-    GX_SetDispCopyDst(wii_port_rmode->fbWidth, wii_port_rmode->efbHeight);
+    {
+        /* the EFB is efbHeight lines and the XFB xfbHeight (equal on NTSC, 528 -> 574 on PAL): the copy scales between them */
+        const f32 yscale = GX_GetYScaleFactor(wii_port_rmode->efbHeight, wii_port_rmode->xfbHeight);
+        const u32 xfb_lines = GX_SetDispCopyYScale(yscale);
+        GX_SetDispCopyDst(wii_port_rmode->fbWidth, xfb_lines);
+    }
     GX_SetCopyFilter(wii_port_rmode->aa, wii_port_rmode->sample_pattern, GX_TRUE, wii_port_rmode->vfilter);
     GX_SetFieldMode(wii_port_rmode->field_rendering, GX_ENABLE);
     GX_SetCopyClear((GXColor){0, 0, 0, 0xFF}, GX_MAX_Z24);
@@ -680,6 +687,61 @@ void *wii_port_mem2_alloc(size_t size, size_t align)
     (void)size;
     (void)align;
     return NULL;
+#endif
+}
+
+bool wii_port_gx_ready(void)
+{
+#ifdef __WII__
+    return wii_port_ready && wii_port_video_ready && wii_port_rmode && wii_port_xfb[0] && wii_port_xfb[1];
+#else
+    return false;
+#endif
+}
+
+void wii_port_gx_present(void)
+{
+#ifdef __WII__
+    if (!wii_port_gx_ready()) {
+        return;
+    }
+    /* The frame is in the EFB: copy it to the XFB the VI is not showing (clearing the EFB on the way), let the GPU finish,
+     * and show it from the next field. That XFB is still on screen until the flip asked for last frame has happened (the VI
+     * latches it at a retrace): only then is there anything to wait for. A frame slower than a field (every frame, today)
+     * waits for nothing; a faster one still waits, so the game is never shown faster than the display. */
+    static bool flip_pending;
+    if (flip_pending && VIDEO_GetCurrentFramebuffer() == wii_port_xfb[wii_port_fbb]) {
+        VIDEO_WaitVSync();
+    }
+    GX_SetColorUpdate(GX_TRUE);
+    GX_CopyDisp(wii_port_xfb[wii_port_fbb], GX_TRUE);
+    GX_DrawDone();
+    VIDEO_SetNextFramebuffer(wii_port_xfb[wii_port_fbb]);
+    VIDEO_Flush();
+    flip_pending = true;
+    wii_port_fbb ^= 1;
+#endif
+}
+
+void wii_port_log(const char *fmt, ...)
+{
+    va_list ap;
+    va_start(ap, fmt);
+    FILE *fp = fopen("wii_boot.log", "a");
+    if (fp) {
+        vfprintf(fp, fmt, ap);
+        fputc('\n', fp);
+        fclose(fp);
+    }
+    va_end(ap);
+}
+
+uint64_t wii_port_usec(void)
+{
+#ifdef __WII__
+    return ticks_to_microsecs(gettime());
+#else
+    return 0;
 #endif
 }
 

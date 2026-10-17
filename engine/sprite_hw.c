@@ -400,6 +400,39 @@ void sprite_render_item(const sprite_state *st, const fog_state *fog,
     }
 }
 
+/* A 64-bit hash of everything sprite_render_item reads for this item but the tile ROM (which does not change): its box, the
+ * decoded entry (position, size, flips, tile, clip window, fog/fade/alpha factors), the colours fog and fade blend towards,
+ * the linked tile codes and its 256 palette pens. Two items with the same key render the same pixels, so a renderer that
+ * keeps last frame's results reuses them. Valid after sprite_collect for the same frame, as sprite_render_item is. */
+uint64_t sprite_item_key(const sprite_state *st, const fog_state *fog, const sprite_item *it)
+{
+    uint64_t h = 1469598103934665603ull;
+#define MIX(v) (h = (h ^ (uint32_t)(v)) * 1099511628211ull)
+    if (!st || !st->valid) return 0;
+    uint8_t fr[3] = { fog->fog_rgb[0], fog->fog_rgb[1], fog->fog_rgb[2] };
+    uint8_t fa[3] = { fog->screen_fade[0], fog->screen_fade[1], fog->screen_fade[2] };
+    spr_decoded d;
+    decode_sprite(st, fog, it->idx, &d, fr, fa);
+    MIX(it->x0); MIX(it->y0); MIX(it->w); MIX(it->h);
+    MIX(d.xpos); MIX(d.ypos); MIX(d.sizex); MIX(d.sizey); MIX(d.rows); MIX(d.cols);
+    MIX(d.flipx); MIX(d.flipy); MIX(d.linktype); MIX(d.tile); MIX(d.pal_base);
+    MIX(d.c.cxn); MIX(d.c.cxx); MIX(d.c.cyn); MIX(d.c.cyx);
+    MIX(d.c.fogfactor); MIX(d.c.fadefactor); MIX(d.c.alphafactor);
+    MIX(d.c.alpha_enabled); MIX(d.c.alpha_pen); MIX(d.c.prioverchar);
+    MIX(fr[0] | fr[1] << 8 | fr[2] << 16); MIX(fa[0] | fa[1] << 8 | fa[2] << 16);
+    if (d.linktype != 0xFF)
+        for (int k = 0; k < d.rows * d.cols; k++) MIX(nthword(st->spr, 0x400 + k + d.linktype * 4));
+    const uint8_t *pal = st->pal;
+    for (int p = 0; p < 256; p += 4) {
+        const int i = (d.pal_base + p) & 0x7FFF;
+        MIX(pal[i] | pal[i + 1] << 8 | pal[i + 2] << 16 | (uint32_t)pal[i + 3] << 24);
+        MIX(pal[0x8000 + i] | pal[0x8000 + i + 1] << 8 | pal[0x8000 + i + 2] << 16 | (uint32_t)pal[0x8000 + i + 3] << 24);
+        MIX(pal[0x10000 + i] | pal[0x10000 + i + 1] << 8 | pal[0x10000 + i + 2] << 16 | (uint32_t)pal[0x10000 + i + 3] << 24);
+    }
+#undef MIX
+    return h;
+}
+
 void sprite_render(const sprite_state *st, const fog_state *fog,
                    uint8_t *rgba, uint8_t *prio)
 {

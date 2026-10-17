@@ -34,6 +34,7 @@
  */
 
 #include <stdint.h>
+#include <stddef.h>
 #include <math.h>
 #include <string.h>
 #include <stdlib.h>
@@ -122,6 +123,40 @@ static inline int32_t proj_sat(int64_t base16, int64_t v, int32_t mant,
     return (int32_t)r;
 #endif
 }
+
+/* THE WII'S LEAN PATH. A 32-bit PowerPC has no __int128, so proj_sat above goes through long double with int64 -> float
+ * conversions done in software, eight times a quad. The Wii renderer (engine/ss22_gx.c) reads only the near-clipped polygon
+ * rv: the raw projection v[] and the guard-band polygon dv exist for the PC gates and the GL rasteriser, so GEO_LEAN leaves
+ * them out, and projects rv with proj_fast -- the int128 path's integer arithmetic (floored shift, truncated divide), in
+ * 32-bit divides where the numerator fits and an exactly built double where it does not. */
+#if defined(__WII__) || defined(__wii__)
+#define GEO_LEAN 1
+#else
+#define GEO_LEAN 0
+#endif
+
+#if GEO_LEAN
+static inline int32_t proj_fast(int32_t base16, int64_t v, int32_t mant, int shift, int64_t z, int negate)
+{
+    if (v != (int32_t)v || z != (int32_t)z || z <= 0) return proj_sat(base16, v, mant, shift, z, negate);   /* the rare wide case */
+    int64_t num = (int64_t)(int32_t)v * mant;                      /* |v| < 2^31, |mant| < 2^15: fits in 47 bits */
+    num = (int64_t)((uint64_t)num << 4) >> shift;                  /* arithmetic: floors, as the oracle */
+    int64_t q;
+    if (num == (int32_t)num) q = (int32_t)num / (int32_t)z;        /* truncating, one divw */
+    else {
+        const double nd = (double)(int32_t)(num >> 32) * 4294967296.0 + (double)(uint32_t)num;   /* exact: |num| < 2^51 */
+        const double qd = nd / (double)(int32_t)z;
+        q = (qd < 2147483647.0 && qd > -2147483647.0) ? (int64_t)(int32_t)qd : (int64_t)qd;    /* fctiwz truncates */
+    }
+    const int64_t r = (int64_t)base16 + (negate ? -q : q);
+    if (r > (int64_t)INT32_MAX) return INT32_MAX;
+    if (r < (int64_t)INT32_MIN) return INT32_MIN;
+    return (int32_t)r;
+}
+#define PROJ(b, v, m, s, z, n) proj_fast((int32_t)(b), (v), (m), (s), (z), (n))
+#else
+#define PROJ(b, v, m, s, z, n) proj_sat((b), (v), (m), (s), (z), (n))
+#endif
 
 static inline int32_t sat32(int64_t v)
 {
@@ -285,7 +320,12 @@ static void quad_fixed(int32_t color, uint32_t addr, int32_t polyshift,
     const int32_t cy = 240 + g_view.vy;
 
     geo_quad q;
+#if GEO_LEAN
+    /* v[], rv[] and dv[] are a kilobyte: rv is filled up to nrv below and the others are not read, so clear the rest only */
+    memset(&q.ndv, 0, sizeof q - offsetof(geo_quad, ndv));
+#else
     memset(&q, 0, sizeof q);
+#endif
     q.color = (uint32_t)color;
     q.zsort = zsort;
     q.behind = 0;
@@ -331,6 +371,9 @@ static void quad_fixed(int32_t color, uint32_t addr, int32_t polyshift,
     }
 
     /* raw per-vertex projection -- parity with the oracle's scr16 */
+#if GEO_LEAN
+    for (int i = 0; i < 4; i++) if (vz[i] <= 0) q.behind = 1;
+#else
     for (int i = 0; i < 4; i++) {
         if (vz[i] <= 0) { q.v[i].valid = 0; q.behind = 1; continue; }
         q.v[i].sx16 = proj_sat((int64_t)cx * 16, vx[i], mant, shift, vz[i], 0);
@@ -341,6 +384,7 @@ static void quad_fixed(int32_t color, uint32_t addr, int32_t polyshift,
         q.v[i].bri  = briv[i];
         q.v[i].valid = 1;
     }
+#endif
 
     {   /* whole-quad UV box, for the live texture cache (see geo_hw.h) */
         int u0 = 0xfff, u1 = 0, v0 = 0xfff, v1 = 0;
@@ -401,10 +445,12 @@ static void quad_fixed(int32_t color, uint32_t addr, int32_t polyshift,
         }
         q.nrv = (n >= 3) ? n : 0;
         n_pre = n;
+#if !GEO_LEAN                                             /* only the guard band reads them */
         for (int i = 0; i < n && i < 6; i++) { pre_x[i] = (double)cx_[i]; pre_y[i] = (double)cy_[i]; }
+#endif
         for (int i = 0; i < n && i < 6; i++) {
-            q.rv[i].sx16 = proj_sat((int64_t)cx * 16, cx_[i], mant, shift, cz_[i], 0);
-            q.rv[i].sy16 = proj_sat((int64_t)cy * 16, cy_[i], mant, shift, cz_[i], 1);
+            q.rv[i].sx16 = PROJ((int64_t)cx * 16, cx_[i], mant, shift, cz_[i], 0);
+            q.rv[i].sy16 = PROJ((int64_t)cy * 16, cy_[i], mant, shift, cz_[i], 1);
             q.rv[i].z    = (int32_t)cz_[i];
             q.rv[i].u    = (uint32_t)(cu_[i] >> UF) & 0xfff;
             q.rv[i].v    = (uint32_t)(cv_[i] >> UF) & 0xfff;
@@ -427,7 +473,7 @@ static void quad_fixed(int32_t color, uint32_t addr, int32_t polyshift,
      * polygon is what gets DRAWN. rv is untouched, so the gates still compare
      * the oracle's numbers. */
     q.ndv = 0;
-    if (q.nrv >= 3) {
+    if (!GEO_LEAN && q.nrv >= 3) {                        /* the Wii renderer clips rv to the screen itself */
         const int64_t G16 = 4096 * 16;        /* 4096 px either side of centre */
         int need = 0;
         for (int i = 0; i < q.nrv; i++) {

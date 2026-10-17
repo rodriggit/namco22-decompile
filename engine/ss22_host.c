@@ -37,15 +37,7 @@
 static const ss22_host_game *game;
 static bool paused, shot_pending, headless_open, restart_req;
 static wii_platform_input wii_input;
-static uint16_t *wii_frame_buffer;
 static int16_t wii_audio_buffer[2048];
-static wii_platform_frame wii_frame = {
-    .width = 640,
-    .height = 480,
-    .pitch = 640 * sizeof(uint16_t),
-    .format = WII_FRAME_FORMAT_RGB565,
-    .pixels = NULL,
-};
 
 bool ss22_host_active(void) { return true; }
 bool ss22_host_restart_requested(void) { return false; }
@@ -72,16 +64,6 @@ bool ss22_host_open(const ss22_host_game *g, int scale, bool fs)
         };
         wii_port_configure(&cfg);
         wii_port_setup_audio(&audio);
-    }
-    if (!wii_frame_buffer) {
-        const size_t fb_bytes = (size_t)wii_frame.width * (size_t)wii_frame.height * sizeof(uint16_t);
-        wii_frame_buffer = (uint16_t *)wii_port_mem2_alloc(fb_bytes, 32);
-        if (!wii_frame_buffer) {
-            fprintf(stderr, "[WII] host frame buffer allocation failed (%u bytes), falling back to blank frame\n", (unsigned)fb_bytes);
-        } else {
-            memset(wii_frame_buffer, 0, fb_bytes);
-            wii_frame.pixels = wii_frame_buffer;
-        }
     }
     memset(&wii_input, 0, sizeof(wii_input));
     if (game && game->input_init) game->input_init();     /* the cabinet's controls (engine/ss22_input_wii.c), as the desktop host does */
@@ -118,63 +100,30 @@ bool ss22_host_pointer(float *nx, float *ny, bool *inside)
 
 bool ss22_host_frame(void)
 {
-    static unsigned dbg_frame;
-    static unsigned null_fb_streak;
-    int fbw = 0, fbh = 0;
-    const uint16_t *fb;
+    /* where a frame's time goes, into the boot log every 120 frames: the emulation between two host frames (68K, DSP, sound
+     * MCU, the display-list walk), the draw (engine/ss22_gx.c) and the present (EFB copy, GPU finish, wait for vsync) */
+    static uint64_t last_end, acc_emu, acc_draw, acc_present;
+    static unsigned frames;
+    const uint64_t t0 = wii_port_usec();
+    if (last_end) acc_emu += t0 - last_end;
 
     /* ss22_run.c leaves the cabinet's inputs to the host while one is active: read the Wiimote and tell the MCU, once per frame. */
     if (game && game->input_update) game->input_update();
-    ss22_draw((int)wii_frame.width, (int)wii_frame.height);
-    fb = ss22_wii_frame_rgb565(&fbw, &fbh);
-    if (!fb) {
-        null_fb_streak++;
-        wii_frame.width = 640u;
-        wii_frame.height = 480u;
-        wii_frame.pitch = wii_frame.width * (uint32_t)sizeof(uint16_t);
-        wii_frame.format = WII_FRAME_FORMAT_RGB565;
-        if (wii_frame_buffer) {
-            const size_t px_count = (size_t)wii_frame.width * (size_t)wii_frame.height;
-            for (size_t i = 0; i < px_count; ++i) {
-                wii_frame_buffer[i] = 0xF81Fu;
-            }
-            wii_frame.pixels = wii_frame_buffer;
-        } else {
-            wii_frame.pixels = NULL;
-        }
-        if ((dbg_frame % 60u) == 0u) {
-            fprintf(stderr,
-                    "[WII-HOST] frame=%u fb=NULL streak=%u content=%u visible=%u\n",
-                    dbg_frame,
-                    null_fb_streak,
-                    (unsigned)ss22_wii_frame_has_content(),
-                    (unsigned)ss22_wii_frame_is_visible());
-        }
-        wii_port_submit_audio(wii_audio_buffer, sizeof(wii_audio_buffer) / sizeof(wii_audio_buffer[0]));
-        wii_port_submit_frame(&wii_frame);
-        dbg_frame++;
-        return true;
-    }
-
-    null_fb_streak = 0;
-    wii_frame.width = (uint32_t)(fbw > 0 ? fbw : 640);
-    wii_frame.height = (uint32_t)(fbh > 0 ? fbh : 480);
-    wii_frame.pitch = wii_frame.width * (uint32_t)sizeof(uint16_t);
-    wii_frame.format = WII_FRAME_FORMAT_RGB565;
-    wii_frame.pixels = (void *)fb;
-    if ((dbg_frame % 60u) == 0u) {
-        fprintf(stderr,
-                "[WII-HOST] frame=%u fb=%p %ux%u content=%u visible=%u\n",
-                dbg_frame,
-                (const void *)fb,
-                (unsigned)wii_frame.width,
-                (unsigned)wii_frame.height,
-                (unsigned)ss22_wii_frame_has_content(),
-                (unsigned)ss22_wii_frame_is_visible());
-    }
+    ss22_draw(640, 480);
+    const uint64_t t1 = wii_port_usec();
+    wii_port_gx_present();
     wii_port_submit_audio(wii_audio_buffer, sizeof(wii_audio_buffer) / sizeof(wii_audio_buffer[0]));
-    wii_port_submit_frame(&wii_frame);
-    dbg_frame++;
+    last_end = wii_port_usec();
+    acc_draw += t1 - t0;
+    acc_present += last_end - t1;
+
+    if (++frames % 120u == 0u) {
+        const double k = 1.0 / (120.0 * 1000.0);
+        wii_port_log("[WII-HOST] frame %u: ms per frame emu %.1f draw %.1f present %.1f = %.1f (%.1f fps)", frames,
+                     acc_emu * k, acc_draw * k, acc_present * k, (acc_emu + acc_draw + acc_present) * k,
+                     (acc_emu + acc_draw + acc_present) ? 120.0 * 1e6 / (double)(acc_emu + acc_draw + acc_present) : 0.0);
+        acc_emu = acc_draw = acc_present = 0;
+    }
     return true;
 }
 
