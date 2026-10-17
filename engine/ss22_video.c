@@ -24,7 +24,15 @@ bool ss22_video_init(const char *dir)
     ss22_gl_set_hud(&c->hud);                /* widescreen: the compositor learns this game's HUD (Prop Cycle, which links it too, never does) */
     if (!eng_load_texture_roms(dir, c->cg, c->ccrl, c->ccrh)) return false;
 
-    const size_t chip = 0x200000, region = c->sprite_region;
+    const size_t chip = 0x200000;
+#if defined(__WII__) || defined(__wii__)
+    /* Wii: stop the region after the last chip when its fill is the transparent pen (0xFF): a tile past the end is skipped
+     * (sprite_hw.c draw_tile_dst), which draws exactly what an all-0xFF tile would. Time Crisis: 12 MB instead of 16. */
+    const size_t chips_end = (size_t)c->n_scg * chip;
+    const size_t region = (c->sprite_fill == 0xFF && chips_end && chips_end < c->sprite_region) ? chips_end : c->sprite_region;
+#else
+    const size_t region = c->sprite_region;
+#endif
     uint8_t *tiles = malloc(region);
     if (!tiles) return false;
     memset(tiles, c->sprite_fill, region);

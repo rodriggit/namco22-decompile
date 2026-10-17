@@ -279,6 +279,38 @@ bool ss22_snd_init(const char *dir)
 {
     const ss22_snd_cfg *c = &g_ss22_game->snd;
     g_ss22_snd_set_run = ss22_snd_set_run;           /* syscon 0x16 reaches this MCU (engine/ss22_board.c) */
+#if defined(__WII__) || defined(__wii__)
+    /* Wii: MEM2 cannot spare MAME's whole wave region (Time Crisis: 16 MB for 6 MB of chips). Keep each chip's own bytes in one
+     * compact buffer and give the C352 a window per chip at its region offset; the gaps read 0, as the zero-filled region does. */
+    {
+        size_t sz[2] = { 0, 0 }, total = 0, at = 0;
+        c352_seg_t seg[2];
+        int ns = 0;
+        for (int i = 0; i < 2; i++) {
+            if (!c->wave[i]) continue;
+            char p[1024]; snprintf(p, sizeof p, "%s/%s", dir, c->wave[i]);
+            FILE *f = fopen(p, "rb");
+            if (f) { if (fseek(f, 0, SEEK_END) == 0) { const long n = ftell(f); sz[i] = n > 0 ? (size_t)n : 0; } fclose(f); }
+            if (sz[i] > 0x400000) sz[i] = 0x400000;      /* the slot slurp_part reads, as the desktop path */
+            if (c->wave_off[i] + sz[i] > c->wave_size) sz[i] = c->wave_size > c->wave_off[i] ? c->wave_size - c->wave_off[i] : 0;
+            total += sz[i];
+        }
+        rom = calloc(1, 0x80000);
+        wave = total ? calloc(1, total) : NULL;
+        if (!rom || !wave || !slurp(dir, c->rom, rom, 0x80000)) return false;
+        chip_ok = true;
+        for (int i = 0; chip_ok && i < 2; i++) {
+            if (!c->wave[i]) continue;
+            uint8_t *w = wave + at;
+            chip_ok = sz[i] > 0 && slurp_part(dir, c->wave[i], w, sz[i], true);
+            if (chip_ok && c->wave_swap[i])              /* ROM_LOAD16_WORD_SWAP, as below */
+                for (size_t k = 0; k < (sz[i] & ~(size_t)1); k += 2) { const uint8_t t = w[k]; w[k] = w[k + 1]; w[k + 1] = t; }
+            seg[ns++] = (c352_seg_t){ c->wave_off[i], (uint32_t)sz[i], w };
+            at += sz[i];
+        }
+        if (chip_ok) { c352_init_segments(&chip, seg, ns); c352_reset(&chip); }
+    }
+#else
     rom = calloc(1, 0x80000);
     wave = calloc(1, c->wave_size);
     if (!rom || !wave || !slurp(dir, c->rom, rom, 0x80000)) return false;
@@ -291,6 +323,7 @@ bool ss22_snd_init(const char *dir)
             for (uint32_t k = 0; k < n; k += 2) { const uint8_t t = w[k]; w[k] = w[k + 1]; w[k + 1] = t; }
         }
     if (chip_ok) { c352_init(&chip, wave, c->wave_size); c352_reset(&chip); }
+#endif
     mix_apply();                                              /* this cabinet's speakers, at the default levels until the settings are read */
     m37710_init(&cpu, bus_r, bus_w, NULL);
     cpu.port_r = port_r; cpu.port_w = port_w;

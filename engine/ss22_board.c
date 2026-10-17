@@ -51,10 +51,25 @@ void (*g_ss22_wram_watch)(uint32_t v, int size);
 
 #if defined(__WII__) || defined(__wii__)
 ss22_sys_t *g_ss22_ptr;
+static void *ss22_wii_arena2_alloc(size_t size, size_t align)
+{
+    if (align == 0) align = 32;
+    if (align & (align - 1)) return NULL;
+
+    uintptr_t lo = (uintptr_t)SYS_GetArena2Lo();
+    uintptr_t hi = (uintptr_t)SYS_GetArena2Hi();
+    uintptr_t p = (lo + (uintptr_t)(align - 1)) & ~(uintptr_t)(align - 1);
+    uintptr_t end = p + size;
+    if (end < p || end > hi) return NULL;
+
+    SYS_SetArena2Lo((void *)end);
+    return (void *)p;
+}
+
 static bool ss22_sys_bootstrap(void)
 {
     if (g_ss22_ptr) return true;
-    g_ss22_ptr = (ss22_sys_t *)SYS_AllocArena2MemLo(sizeof(ss22_sys_t), 32);
+    g_ss22_ptr = (ss22_sys_t *)ss22_wii_arena2_alloc(sizeof(ss22_sys_t), 32);
     if (!g_ss22_ptr) {
         fprintf(stderr, "[WII] cannot allocate ss22 state in MEM2 (%u bytes)\n", (unsigned)sizeof(ss22_sys_t));
         return false;

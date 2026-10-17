@@ -53,18 +53,20 @@ void ss22_input_update(void)
         if (held) pressed |= ac->bit;
     }
 
-    if (in.trigger && game->light_gun) {
-        const float nx = (float)in.gun_x / 1024.0f;
-        const float ny = (float)in.gun_y / 768.0f;
-        aim_x = nx < 0.0f ? 0.0f : nx > 1.0f ? 1.0f : nx;
-        aim_y = ny < 0.0f ? 0.0f : ny > 1.0f ? 1.0f : ny;
+    if (game->light_gun) {
+        /* Every frame, as the desktop mouse: the gun's position is live, and pointing off-screen is how the player reloads. */
         aim_on = !in.offscreen;
+        if (aim_on) {
+            uint32_t ir_w, ir_h;
+            wii_port_ir_size(&ir_w, &ir_h);
+            const float nx = (float)in.gun_x / (float)ir_w;
+            const float ny = (float)in.gun_y / (float)ir_h;
+            aim_x = nx < 0.0f ? 0.0f : nx > 1.0f ? 1.0f : nx;
+            aim_y = ny < 0.0f ? 0.0f : ny > 1.0f ? 1.0f : ny;
+            g_ss22_gun_x = (uint16_t)(68 + aim_x * 626);
+            g_ss22_gun_y = (uint16_t)(43 + aim_y * 241);
+        }
         g_ss22_gun_off = !aim_on;
-        g_ss22_gun_x = (uint16_t)(68 + aim_x * 626);
-        g_ss22_gun_y = (uint16_t)(43 + aim_y * 241);
-    } else if (game && game->light_gun) {
-        aim_on = false;
-        g_ss22_gun_off = true;
     }
 
     if (game->service_bit && in.service) pressed |= game->service_bit;

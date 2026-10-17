@@ -5,9 +5,31 @@
 static uint8_t rom_read_byte(const c352_t *c, uint32_t addr)
 {
     addr &= 0xFFFFFF; /* device_rom_interface<24> */
+#if defined(__WII__) || defined(__wii__)
+    if (c->n_seg) {
+        for (int i = 0; i < c->n_seg; i++) {
+            const uint32_t o = addr - c->seg[i].base;   /* unsigned: below the base wraps past size */
+            if (o < c->seg[i].size) return c->seg[i].data[o];
+        }
+        return 0;
+    }
+#endif
     if (addr >= c->rom_size) return 0;
     return c->rom[addr];
 }
+
+#if defined(__WII__) || defined(__wii__)
+void c352_init_segments(c352_t *c, const c352_seg_t *seg, int n)
+{
+    uint32_t end = 0;
+    if (n > C352_MAX_SEGS) n = C352_MAX_SEGS;
+    for (int i = 0; i < n; i++)
+        if (seg[i].base + seg[i].size > end) end = seg[i].base + seg[i].size;
+    c352_init(c, NULL, end);                         /* clears the chip: set the windows after */
+    for (int i = 0; i < n; i++) c->seg[i] = seg[i];
+    c->n_seg = n;
+}
+#endif
 
 void c352_init(c352_t *c, const uint8_t *rom, uint32_t rom_size)
 {

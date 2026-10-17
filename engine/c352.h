@@ -66,6 +66,12 @@ typedef struct {
     uint16_t wave_loop;
 } c352_voice_t;
 
+#if defined(__WII__) || defined(__wii__)
+/* Wii: the sample ROM as a few windows of a compact buffer instead of the whole 16 MB region (MEM2 cannot spare the gaps). */
+typedef struct { uint32_t base, size; const uint8_t *data; } c352_seg_t;
+#define C352_MAX_SEGS 2
+#endif
+
 typedef struct {
     c352_voice_t voice[C352_NUM_VOICES];
     int16_t  mulawtab[256];
@@ -74,9 +80,16 @@ typedef struct {
 
     const uint8_t *rom;      /* sample ROM image, byte-addressed */
     uint32_t       rom_size; /* e.g. 0x1000000; reads outside return 0 */
+#if defined(__WII__) || defined(__wii__)
+    c352_seg_t     seg[C352_MAX_SEGS];
+    int            n_seg;    /* > 0: the ROM is these windows; every other address reads 0, as a gap of the full region does */
+#endif
 } c352_t;
 
 void c352_init(c352_t *c, const uint8_t *rom, uint32_t rom_size);
+#if defined(__WII__) || defined(__wii__)
+void c352_init_segments(c352_t *c, const c352_seg_t *seg, int n);
+#endif
 void c352_reset(c352_t *c);
 
 uint16_t c352_read(const c352_t *c, uint32_t offset);

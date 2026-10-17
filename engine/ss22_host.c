@@ -84,6 +84,7 @@ bool ss22_host_open(const ss22_host_game *g, int scale, bool fs)
         }
     }
     memset(&wii_input, 0, sizeof(wii_input));
+    if (game && game->input_init) game->input_init();     /* the cabinet's controls (engine/ss22_input_wii.c), as the desktop host does */
     fprintf(stderr, "[WII] host stub initialized for %s\n", game ? game->title : "Time Crisis");
     return true;
 }
@@ -105,17 +106,75 @@ bool ss22_host_pointer(float *nx, float *ny, bool *inside)
         return true;
     }
 
-    if (nx) *nx = (float)wii_input.gun_x / 1024.0f;
-    if (ny) *ny = (float)wii_input.gun_y / 768.0f;
+    {
+        uint32_t ir_w, ir_h;
+        wii_port_ir_size(&ir_w, &ir_h);
+        if (nx) *nx = (float)wii_input.gun_x / (float)ir_w;
+        if (ny) *ny = (float)wii_input.gun_y / (float)ir_h;
+    }
     if (inside) *inside = true;
     return true;
 }
 
 bool ss22_host_frame(void)
 {
-    wii_port_poll_input(&wii_input);
+    static unsigned dbg_frame;
+    static unsigned null_fb_streak;
+    int fbw = 0, fbh = 0;
+    const uint16_t *fb;
+
+    /* ss22_run.c leaves the cabinet's inputs to the host while one is active: read the Wiimote and tell the MCU, once per frame. */
+    if (game && game->input_update) game->input_update();
+    ss22_draw((int)wii_frame.width, (int)wii_frame.height);
+    fb = ss22_wii_frame_rgb565(&fbw, &fbh);
+    if (!fb) {
+        null_fb_streak++;
+        wii_frame.width = 640u;
+        wii_frame.height = 480u;
+        wii_frame.pitch = wii_frame.width * (uint32_t)sizeof(uint16_t);
+        wii_frame.format = WII_FRAME_FORMAT_RGB565;
+        if (wii_frame_buffer) {
+            const size_t px_count = (size_t)wii_frame.width * (size_t)wii_frame.height;
+            for (size_t i = 0; i < px_count; ++i) {
+                wii_frame_buffer[i] = 0xF81Fu;
+            }
+            wii_frame.pixels = wii_frame_buffer;
+        } else {
+            wii_frame.pixels = NULL;
+        }
+        if ((dbg_frame % 60u) == 0u) {
+            fprintf(stderr,
+                    "[WII-HOST] frame=%u fb=NULL streak=%u content=%u visible=%u\n",
+                    dbg_frame,
+                    null_fb_streak,
+                    (unsigned)ss22_wii_frame_has_content(),
+                    (unsigned)ss22_wii_frame_is_visible());
+        }
+        wii_port_submit_audio(wii_audio_buffer, sizeof(wii_audio_buffer) / sizeof(wii_audio_buffer[0]));
+        wii_port_submit_frame(&wii_frame);
+        dbg_frame++;
+        return true;
+    }
+
+    null_fb_streak = 0;
+    wii_frame.width = (uint32_t)(fbw > 0 ? fbw : 640);
+    wii_frame.height = (uint32_t)(fbh > 0 ? fbh : 480);
+    wii_frame.pitch = wii_frame.width * (uint32_t)sizeof(uint16_t);
+    wii_frame.format = WII_FRAME_FORMAT_RGB565;
+    wii_frame.pixels = (void *)fb;
+    if ((dbg_frame % 60u) == 0u) {
+        fprintf(stderr,
+                "[WII-HOST] frame=%u fb=%p %ux%u content=%u visible=%u\n",
+                dbg_frame,
+                (const void *)fb,
+                (unsigned)wii_frame.width,
+                (unsigned)wii_frame.height,
+                (unsigned)ss22_wii_frame_has_content(),
+                (unsigned)ss22_wii_frame_is_visible());
+    }
     wii_port_submit_audio(wii_audio_buffer, sizeof(wii_audio_buffer) / sizeof(wii_audio_buffer[0]));
     wii_port_submit_frame(&wii_frame);
+    dbg_frame++;
     return true;
 }
 

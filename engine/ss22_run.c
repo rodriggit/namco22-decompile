@@ -17,7 +17,9 @@
  */
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdarg.h>
 #include <string.h>
+#include <errno.h>
 #include "ss22_game.h"
 #include "ss22_out.h"
 #include "ss22_host.h"
@@ -27,6 +29,9 @@
 #include "romzip.h"
 #ifndef __WII__
 #include <SDL2/SDL.h>
+#endif
+#if defined(__WII__) || defined(__wii__)
+#include "../timecris/wii/port.h"
 #endif
 #if !defined(_WIN32) && !defined(__WII__) && !defined(__wii__)
 #include <unistd.h>
@@ -64,6 +69,40 @@ static void ss22_free_base_path(char *base)
     SDL_free(base);
 #endif
 }
+
+#if defined(__WII__) || defined(__wii__)
+static void ss22_wii_show_status(const char *text)
+{
+    wii_port_show_status(text);
+}
+#else
+static void ss22_wii_show_status(const char *text)
+{
+    (void)text;
+}
+#endif
+
+#if defined(__WII__) || defined(__wii__)
+static void wii_boot_log(const char *fmt, ...)
+{
+    va_list ap;
+    va_start(ap, fmt);
+    vfprintf(stderr, fmt, ap);
+    va_end(ap);
+    fflush(stderr);
+
+    va_start(ap, fmt);
+    FILE *fp = fopen("wii_boot.log", "a");
+    if (fp) {
+        vfprintf(fp, fmt, ap);
+        fclose(fp);
+    }
+    va_end(ap);
+}
+#define WII_BOOT_LOG(...) wii_boot_log(__VA_ARGS__)
+#else
+#define WII_BOOT_LOG(...) fprintf(stderr, __VA_ARGS__)
+#endif
 
 /* ENG_FTIME=1: per-frame wall-clock split, printed every 60 frames --
  * total = cpu (68K+DSP+sound, everything outside the video calls) + prepare
@@ -510,9 +549,29 @@ int ss22_main(int argc, char **argv, const ss22_game *g)
     host_game = (ss22_host_game){ g->name, cfgfile, g->tag, g->lname, in_init, ss22_input_page, ss22_input_event, in_update,
                                   ss22_input_neutral, ss22_snd_set_output, g->out_gain,
                                   g->input && g->input->light_gun ? ss22_input_aim : NULL, g->menu_page };
+    char rom_dir_wii[1024];
+    char roms_dir_wii[1024];
+    char rom_dir_sd_extracted[1024];
+    char rom_dir_sd_roms[1024];
     const char *rom_dir = "extracted";
+#if defined(__WII__) || defined(__wii__)
+    wii_port_init();
+    WII_BOOT_LOG("[WII-BOOT] booting\n");
+    {
+        const char *root = wii_port_storage_root();
+        if (!root || !*root) root = "sd:/";
+        snprintf(rom_dir_wii, sizeof rom_dir_wii, "extracted");
+        snprintf(roms_dir_wii, sizeof roms_dir_wii, "roms");
+        snprintf(rom_dir_sd_extracted, sizeof rom_dir_sd_extracted, "%sextracted", root);
+        snprintf(rom_dir_sd_roms, sizeof rom_dir_sd_roms, "%sroms", root);
+        rom_dir = rom_dir_wii;
+    }
+#endif
     const char *rd_dir = NULL, *rd_out = NULL; int rd_frame = 0, frames_given = 0;
     if (argc == 1) win_scale = -1;                      /* started with no arguments (a double-click, the Windows how-to): play, in a window */
+#if defined(__WII__) || defined(__wii__)
+    if (argc <= 1) win_scale = -1;                      /* a DOL booted without a loader's argv (Dolphin, some loaders) gets argc 0: still play, with video */
+#endif
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--frames") && i + 1 < argc) { max_frames = (uint32_t)atoi(argv[++i]); frames_given = 1; }
         else if (!strcmp(argv[i], "--window")) { win_scale = (i + 1 < argc && atoi(argv[i + 1]) > 0) ? atoi(argv[++i]) : -1; }   /* -1: the saved size */
@@ -540,10 +599,39 @@ int ss22_main(int argc, char **argv, const ss22_game *g)
         else if (!strcmp(argv[i], "--link") && i + 1 < argc) link_spec = argv[++i];
         else rom_dir = argv[i];
     }
+#if defined(__WII__) || defined(__wii__)
+    if (!frames_given) {
+        max_frames = 0xFFFFFFFFu;
+    }
+#endif
     /* First run: take the ROMs out of MAME's zip if the ROM folder is incomplete (the shared engine/romzip.c) -- how the installed
      * packages and the Windows build are set up; chips unzipped loose into roms/ work too. */
-    if (eng_romzip_missing(rom_dir, g->roms, g->n_roms) && !strcmp(rom_dir, "extracted") && !eng_romzip_missing("roms", g->roms, g->n_roms)) rom_dir = "roms";
     if (eng_romzip_missing(rom_dir, g->roms, g->n_roms)) {
+#if defined(__WII__) || defined(__wii__)
+        /* Wii/Dolphin probe order: local folders first (developer workflow),
+         * then SD-style mount points. */
+        const char *probe[] = { "extracted", "roms", rom_dir_sd_extracted, rom_dir_sd_roms };
+        const int probe_n = (int)(sizeof probe / sizeof probe[0]);
+        WII_BOOT_LOG("[WII-BOOT] initial ROM dir missing: %s\n", rom_dir);
+        for (int i = 0; i < probe_n; i++) {
+            WII_BOOT_LOG("[WII-BOOT] probing ROM dir: %s\n", probe[i]);
+            if (!eng_romzip_missing(probe[i], g->roms, g->n_roms)) {
+                rom_dir = probe[i];
+                WII_BOOT_LOG("[WII-BOOT] selected ROM dir: %s\n", rom_dir);
+                break;
+            }
+        }
+#else
+        if (!strcmp(rom_dir, "extracted") && !eng_romzip_missing("roms", g->roms, g->n_roms)) rom_dir = "roms";
+#endif
+    }
+#if defined(__WII__) || defined(__wii__)
+    WII_BOOT_LOG("[WII-BOOT] ROM dir after probe: %s\n", rom_dir);
+#endif
+    if (eng_romzip_missing(rom_dir, g->roms, g->n_roms)) {
+#if defined(__WII__) || defined(__wii__)
+        WII_BOOT_LOG("[WII-BOOT] ROMs still missing in %s\n", rom_dir);
+#endif
         char err[512], *base = ss22_get_base_path();
         const char *zips[8] = { g->zip };
         int nz = 1;
@@ -557,6 +645,9 @@ int ss22_main(int argc, char **argv, const ss22_game *g)
                 ss22_show_error_box(g->name, msg);
             }
             ss22_free_base_path(base);
+#if defined(__WII__) || defined(__wii__)
+            WII_BOOT_LOG("[WII-BOOT] abort: eng_romzip_autosetup failed (%s)\n", err);
+#endif
             return 2;
         }
         ss22_free_base_path(base);
@@ -564,30 +655,127 @@ int ss22_main(int argc, char **argv, const ss22_game *g)
     if (shot_dir) mkdir(shot_dir, 0755);                /* --shots DIR: make the folder */
     if (rd_dir) {                                       /* the renderer gate: MAME's state, no emulation */
         ss22_board_use(g->board);
-        if (!ss22_dsp_init(rom_dir) || !ss22_video_init(rom_dir) || !ss22_host_open_headless()) return 2;
-        if (!ss22_video_load_dump(rd_dir, rd_frame)) return 2;
+        if (!ss22_dsp_init(rom_dir)) {
+#if defined(__WII__) || defined(__wii__)
+            WII_BOOT_LOG("[WII-BOOT] abort: ss22_dsp_init failed in render-dump mode (rom_dir=%s)\n", rom_dir);
+            ss22_wii_show_status("ABORT DSP");
+#endif
+            return 2;
+        }
+        if (!ss22_video_init(rom_dir)) {
+#if defined(__WII__) || defined(__wii__)
+            WII_BOOT_LOG("[WII-BOOT] abort: ss22_video_init failed in render-dump mode (rom_dir=%s)\n", rom_dir);
+            ss22_wii_show_status("ABORT VIDEO");
+#endif
+            return 2;
+        }
+        if (!ss22_host_open_headless()) {
+#if defined(__WII__) || defined(__wii__)
+            WII_BOOT_LOG("[WII-BOOT] abort: ss22_host_open_headless failed in render-dump mode\n");
+            ss22_wii_show_status("ABORT HOST");
+#endif
+            return 2;
+        }
+        if (!ss22_video_load_dump(rd_dir, rd_frame)) {
+#if defined(__WII__) || defined(__wii__)
+            WII_BOOT_LOG("[WII-BOOT] abort: ss22_video_load_dump failed (dir=%s frame=%d)\n", rd_dir, rd_frame);
+#endif
+            return 2;
+        }
         ss22_video_prepare();
         ss22_host_shot(rd_out);
         return 0;
     }
     ss22_board_use(g->board);
-    if (!ss22_load_program(rom_dir)) return 2;
+    if (!ss22_load_program(rom_dir)) {
+#if defined(__WII__) || defined(__wii__)
+        WII_BOOT_LOG("[WII-BOOT] abort: ss22_load_program failed (rom_dir=%s)\n", rom_dir);
+        ss22_wii_show_status("ABORT ROM");
+#endif
+        return 2;
+    }
     ss22_hw_init(rom_dir);
     if (win_scale && !rep_path) ss22_eeprom_persist(nvfile);   /* a player's session keeps its options and records; headless runs (the gates) and
                                                          * replays never do: a replay plays from the recording's EEPROM and must not save it over the player's */
-    if (rep_path && !rep_open(rep_path)) return 2;       /* the recording's EEPROM replaces whatever was loaded */
+    if (rep_path && !rep_open(rep_path)) {
+#if defined(__WII__) || defined(__wii__)
+        WII_BOOT_LOG("[WII-BOOT] abort: rep_open failed (%s)\n", rep_path);
+        ss22_wii_show_status("ABORT REPLAY");
+#endif
+        return 2;
+    }       /* the recording's EEPROM replaces whatever was loaded */
     static char last_rec[80];                            /* a played session always keeps its latest recording: a crash can be replayed afterwards */
     if (win_scale && !rec_path && !rep_path) { snprintf(last_rec, sizeof last_rec, "%s_last.rec", g->lname); rec_path = last_rec; }
     if (rec_path) { rec_open(rec_path); if (rec_f) fatal_rec = rec_path; }
     { char lv[64]; snprintf(lv, sizeof lv, "%s_LINK", g->tag); if (!link_spec) link_spec = getenv(lv); }
-    if (link_spec && !ss22_link_setup(link_spec, g->tag)) return 2;   /* the cabinet link: after the EEPROM is final (it sets the cabinet id there) */
+    if (link_spec && !ss22_link_setup(link_spec, g->tag)) {
+#if defined(__WII__) || defined(__wii__)
+        WII_BOOT_LOG("[WII-BOOT] abort: ss22_link_setup failed (%s)\n", link_spec);
+        ss22_wii_show_status("ABORT LINK");
+#endif
+        return 2;
+    }   /* the cabinet link: after the EEPROM is final (it sets the cabinet id there) */
     rr_fatal_hook = on_fatal;
-    if (!ss22_dsp_init(rom_dir)) return 2;
+    if (!ss22_dsp_init(rom_dir)) {
+#if defined(__WII__) || defined(__wii__)
+        WII_BOOT_LOG("[WII-BOOT] abort: ss22_dsp_init failed (rom_dir=%s)\n", rom_dir);
+        ss22_wii_show_status("ABORT DSP");
+#endif
+        return 2;
+    }
     if (!ss22_snd_init(rom_dir)) fprintf(stderr, "[%s] no sound MCU: the game will read no inputs\n", g->tag);
     ss22_env_init(getenv(envname));                     /* dev trace build only */
     if (win_scale || shot_dir) {                        /* video: a window, or offscreen for --shots */
         if (win_scale && !frames_given) max_frames = 0xFFFFFFFFu;
-        video_on = ss22_video_init(rom_dir) && (win_scale ? ss22_host_open(&host_game, win_scale, win_full) : ss22_host_open_headless());
+        {
+            const bool video_ok = ss22_video_init(rom_dir);
+            const bool host_ok = video_ok && (win_scale ? ss22_host_open(&host_game, win_scale, win_full) : ss22_host_open_headless());
+            video_on = video_ok && host_ok;
+#if defined(__WII__) || defined(__wii__)
+            if (!video_ok) {
+                extern uint8_t *g_texture_data, *g_texture_tilemap, *g_sprite_tiles;
+                extern int32_t *g_ss22_pointrom;
+                char mem[160];
+                WII_BOOT_LOG("[WII-BOOT] abort: ss22_video_init failed (rom_dir=%s)\n", rom_dir);
+                WII_BOOT_LOG("[WII-BOOT]   texture_data=%p tilemap=%p sprite_tiles=%p pointrom=%p\n",
+                             (void *)g_texture_data, (void *)g_texture_tilemap, (void *)g_sprite_tiles, (void *)g_ss22_pointrom);
+                wii_port_mem_report(mem, sizeof mem);
+                WII_BOOT_LOG("[WII-BOOT]   %s\n", mem);
+                {
+                    /* Redo eng_load_texture_roms' reads one by one: its own errors only reach stderr. */
+                    const ss22_video_cfg *vc = &g->video;
+                    const char *names[10];
+                    size_t sizes[10];
+                    int nn = 0;
+                    for (int i = 0; i < 8; i++) if (vc->cg[i]) { names[nn] = vc->cg[i]; sizes[nn++] = 0x200000; }
+                    names[nn] = vc->ccrl; sizes[nn++] = 0x200000;
+                    names[nn] = vc->ccrh; sizes[nn++] = 0x80000;
+                    for (int i = 0; i < nn; i++) {
+                        char p[1024];
+                        uint8_t *dst = NULL;
+                        snprintf(p, sizeof p, "%s/%s", rom_dir, names[i]);
+                        if (i < nn - 2) dst = g_texture_data ? g_texture_data + (size_t)i * 0x200000 : NULL;
+                        else dst = g_texture_tilemap ? g_texture_tilemap + (i == nn - 1 ? 0x200000 : 0) : NULL;
+                        errno = 0;
+                        FILE *f = fopen(p, "rb");
+                        if (!f) { WII_BOOT_LOG("[WII-BOOT]   %s: fopen failed errno=%d\n", p, errno); continue; }
+                        const size_t got = dst ? fread(dst, 1, sizes[i], f) : 0;
+                        WII_BOOT_LOG("[WII-BOOT]   %s: read %u of %u (errno=%d ferror=%d)\n",
+                                     p, (unsigned)got, (unsigned)sizes[i], errno, ferror(f));
+                        fclose(f);
+                    }
+                }
+                ss22_wii_show_status("ABORT VIDEO");
+            } else if (!host_ok) {
+                WII_BOOT_LOG("[WII-BOOT] abort: ss22_host_open failed (win_scale=%d)\n", win_scale);
+                ss22_wii_show_status("ABORT HOST");
+            } else {
+                char mem[160];
+                wii_port_mem_report(mem, sizeof mem);
+                WII_BOOT_LOG("[WII-BOOT] boot ready (%s)\n", mem);
+            }
+#endif
+        }
         if (video_on && win_scale) {                    /* the player's speaker levels (the settings are loaded now) and their rows in the Audio page */
             static const eng_ui_mixer mixer = { ss22_snd_mix_rows, ss22_snd_mix_name, ss22_snd_mix_get, ss22_snd_mix_set, 200 };
             ss22_snd_mix_load();

@@ -93,11 +93,16 @@ bool wii_port_is_ready(void);
 void wii_port_configure(const wii_platform_config *config);
 void wii_port_setup_audio(const wii_platform_audio *audio);
 void wii_port_poll_input(wii_platform_input *input);
+/* The range gun_x / gun_y span (the WPAD virtual resolution set at configure time). */
+void wii_port_ir_size(uint32_t *w, uint32_t *h);
 void wii_port_begin_frame(void);
 void wii_port_end_frame(const wii_platform_frame *frame);
 void wii_port_submit_frame(const wii_platform_frame *frame);
+void wii_port_show_status(const char *text);
 void wii_port_submit_audio(const int16_t *samples, size_t sample_count);
 void *wii_port_mem2_alloc(size_t size, size_t align);
+/* Free MEM1/MEM2 arena bytes and the largest block malloc can still return, as one log line. */
+void wii_port_mem_report(char *buf, size_t n);
 bool wii_port_load_rom(const char *path, void *buffer, size_t size);
 const char *wii_port_storage_root(void);
 

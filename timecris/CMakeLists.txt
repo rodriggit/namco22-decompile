@@ -82,6 +82,8 @@ if(TC_WII_PORT)
       ${NAMCO22_ENGINE_LIFT_SRC} ${NAMCO22_ENGINE_C25_SRC} ${NAMCO22_ENGINE_SND_SRC}
       ${NAMCO22_ENGINE_SS22_SRC}
   ${NAMCO22_ENGINE_DIR}/eng.c
+    ${NAMCO22_ENGINE_DIR}/geo_hw.c
+    ${NAMCO22_ENGINE_DIR}/slave_list.c
       ${NAMCO22_ENGINE_DIR}/ss22_host.c
       ${NAMCO22_ENGINE_DIR}/ss22_input_wii.c
       ${NAMCO22_ENGINE_DIR}/ss22_out.c
@@ -134,7 +136,7 @@ if(TC_WII_PORT)
       ${DEVKITPRO}/portlibs/ppc/lib
       ${DEVKITPRO}/portlibs/wii/lib
   )
-  target_link_libraries(tc_wii wiiuse asnd bte ogc gcc m ZLIB::ZLIB)
+  target_link_libraries(tc_wii wiiuse asnd bte fat ogc gcc m ZLIB::ZLIB)
 
   find_program(PPC_READELF_TOOL
       NAMES powerpc-eabi-readelf powerpc-eabi-readelf.exe

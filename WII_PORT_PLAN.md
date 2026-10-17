@@ -291,3 +291,74 @@ The next step is to create a small platform abstraction and begin replacing the 
 - `timecris/src/tc_game.c`
 
 These are the highest-value files to adapt first.
+
+## Smoke Test (Dolphin) - Functional Gate
+
+This smoke test is the minimum bar for saying the Wii port is functionally runnable (not only build-clean).
+
+### Preconditions
+
+- Build succeeds for `tc_wii` and generates `tc_wii.dol`.
+- MEM1 checker passes (`timecris/wii/check_mem1_segments.cmake`).
+- Dolphin logging is enabled (`Error`, `Warning`, and `Info` categories for Core/PowerPC/IOS/Video).
+
+### Test steps
+
+1. Boot `tc_wii.dol` in Dolphin with a clean log.
+2. Let attract mode run for at least 120 seconds.
+3. Insert coin and attempt to start gameplay.
+4. Verify trigger, aim, and one service/test action.
+5. Keep gameplay active for at least one full scene transition.
+
+### Pass criteria
+
+- No `Invalid range in CopyToEmu`.
+- No `Oversized range in GetPointerForRange`.
+- No `Unknown Pointer 0x01xxxxxx` from EXI/SRAM paths.
+- No `Invalid read/write` cascades or `ISI exception`.
+- Video updates every frame (not a static black/blank frame).
+- Inputs affect game state (coin/start/trigger/aim visible in behavior).
+- Audio is audible and stable (no permanent silence).
+
+### Fail criteria
+
+- Process exits back to Dolphin immediately after boot.
+- Log is clean of MMU faults, but screen is static/blank and game loop is not observable.
+- Input and/or audio paths are initialized but have no gameplay effect.
+
+## Current Functional Gaps (Why it still does not play)
+
+As of this update, the Wii target is memory-stable and build-stable, but still incomplete as a playable port.
+
+### 1. Rendering path is stubbed
+
+- `engine/ss22_gl.c` Wii branch currently stubs `ss22_prepare()` and `ss22_draw()`.
+- Result: emulation may run, but no real scene composition reaches the screen.
+
+### 2. Host submits a placeholder frame
+
+- Wii path in `engine/ss22_host.c` submits `wii_frame` backed by a MEM2 buffer that is never filled by the real renderer output.
+- Result: stable presentation path, but no actual game image.
+
+### 3. Audio path is not yet fully wired to playback voice
+
+- `timecris/wii/port.c` initializes ASND and stages samples in a ring, but this is not yet a full streaming playback integration equivalent to desktop output.
+- Result: initialization can succeed while gameplay audio is absent or incomplete.
+
+### 4. ROM/storage flow needs end-to-end Wii validation
+
+- SD path assumptions exist (`/sd/...`), but complete Wii runtime storage behavior still needs validation in the same flow as `eng_romzip_autosetup` and game boot expectations.
+- Result: build/boot can occur without reaching full game-ready content flow.
+
+### 5. Functional runtime gate is missing from CI/dev loop
+
+- Current checks validate ELF memory layout and compile health.
+- A runtime smoke gate (boot + attract + input + audio) is still manual.
+
+## Next work items to reach playable status
+
+1. Replace Wii stubs in `engine/ss22_gl.c` with a real GX-backed frame path.
+2. Feed real renderer output into `engine/ss22_host.c` Wii frame submission.
+3. Complete ASND streaming playback integration (buffer lifecycle, underflow handling, timing).
+4. Validate ROM discovery/loading on Wii SD path in the same startup flow used by desktop logic.
+5. Keep the smoke test above as the release gate for Wii status updates.
