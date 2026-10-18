@@ -12,8 +12,8 @@ native PowerPC program built with devkitPro.
 > | 3D graphics (polygons) | ✅ Drawn on the Wii's GPU (GX) |
 > | 2D graphics (text, sprites, HUD) | ✅ Drawn on the GPU, merged with the 3D by depth |
 > | Controls (Wii Remote) | ✅ Work |
-> | Sound | ❌ Emulated but not played yet |
-> | Speed | ⚠️ About 22–31 fps in gameplay (the arcade runs at 60) |
+> | Sound | ⚠️ Plays (music, effects, voices), with gaps while the game runs below full speed |
+> | Speed | ⚠️ About 25–40 fps (the arcade runs at 60) |
 >
 > Tested only in the **Dolphin** emulator. Not yet tried on a real Wii.
 
@@ -62,7 +62,7 @@ The first build takes several minutes: the game's translated program is about 66
 
 | File | What it is |
 |---|---|
-| `build-wii/tc_wii` | The ELF executable (with symbols, for debugging) |
+| `build-wii/tc_wii.elf` | The ELF executable (with symbols, for debugging; Dolphin can open it too) |
 | `build-wii/tc_wii.dol` | The executable for the Wii / Dolphin |
 
 The build also checks that the program fits in the Wii's MEM1 memory (`Checking tc_wii PT_LOAD ranges...`) and stops with
@@ -72,7 +72,7 @@ a message if it does not.
 deleted the `.dol` without changing anything, convert it by hand:
 
 ```bash
-$DEVKITPRO/tools/bin/elf2dol build-wii/tc_wii build-wii/tc_wii.dol
+$DEVKITPRO/tools/bin/elf2dol build-wii/tc_wii.elf build-wii/tc_wii.dol
 ```
 
 ### Common build problems
@@ -158,14 +158,27 @@ All the Wii-only code is kept apart: what is new lives in `timecris/wii/`, and w
 | `engine/ss22_gx.c` | The Wii renderer, on the GPU (GX). The PC version keeps `engine/ss22_gl.c` |
 
 **The renderer.** The polygons' textures are baked into CI8 (8-bit indexed) textures with one RGB565 palette per colour
-group, cached between frames in MEM2. The quads are sorted by depth as the arcade does (it has no depth buffer) and drawn
-with the hardware's shading and depth fog in two TEV stages. Sprites and the text layer are converted to RGB5A3 textures:
-the text only in the 16×16 cells that changed, and a sprite only when something it depends on changed since the last
-frame. The picture is copied from the GPU's framebuffer straight to the screen.
+group, cached between frames. The quads are sorted by depth as the arcade does (it has no depth buffer) and drawn with the
+hardware's shading and depth fog in two TEV stages. Sprites and the text layer are converted to RGB5A3 textures: the text
+only in the 16×16 cells that changed (the screen fade is applied by the GPU, so a fade does not redraw it), and a sprite
+only when something it depends on changed since the last frame. The picture is copied from the GPU's framebuffer straight
+to the screen.
+
+**Sound.** The C352's output (85.3 kHz) is resampled to 48 kHz and played by one ASND stereo voice from a ring buffer, in
+43 ms buffers, starting once 85 ms are queued. While the game runs below full speed the board makes less sound than the
+Wii plays, so it runs dry now and then: the sound fades out for 5 ms instead of clicking, and comes back when the queue
+refills. At full speed the gaps go away.
 
 **Memory.** The Wii has 24 MB of MEM1 and 64 MB of MEM2, and the arcade uses large ROM regions. On the Wii the sound keeps
 only its 6 MB of real chips instead of its 16 MB region, and the sprites 12 MB instead of 16. The result is the same: the
 gaps read as zeros, or as the transparent colour for the sprites.
+
+The ROM regions (textures, sprites, point data, sound: about 43 MB) are taken straight from the memory arenas
+(`eng_alloc_big`), not from the heap. libogc's heap moves to MEM2 for good at the first request MEM1 cannot fit and leaves
+the rest of MEM1 unused, so with the regions in it, how much memory the renderer had left depended on the program's size.
+The renderer takes its own large buffers from what MEM1 has left, and the texture cache gets what remains (up to 6 MB).
+If the cache is too small, textures are dropped and whole models flicker: the `tex:` part of `[WII-GX]` shows it
+(`failed`).
 
 **Speed.** The Wii's CPU still runs the whole arcade board: the 68020's translated program, the master DSP's translated
 program, the sound CPU and the C352 sound chip, plus the geometry stage that turns the DSP's display list into screen
@@ -177,12 +190,21 @@ polygons. Every 120 frames the game writes where the time went into `wii_boot.lo
 | `[WII-EMU]` | Inside `emu`: the DSP, and the sound (the C352's share in brackets). The 68K is what is left |
 | `[WII-GX]` | Inside the renderer: polygons, textures, sprites, text, and `prep` (the geometry stage, inside `emu`) |
 
-In gameplay a frame takes about 32–45 ms: geometry 7–9 ms, DSP 6–10 ms, sound 7–8 ms, 68K about 7 ms and drawing 7–10 ms.
+In gameplay a frame takes about 35–40 ms: geometry 7–9 ms, DSP 6–10 ms, sound 7–9 ms (the C352 about 3–4), 68K about 3 ms
+and drawing 5–8 ms. On the Wii the 68K reads its registers and its ROM and work RAM in place (one load each, instead of a
+byte at a time through a call), and the geometry projects with 32-bit integer divides (the PC build's 128-bit integers do
+not exist on a 32-bit CPU, where they fell back to software floating point).
+
+**Profiling in Dolphin.** With *Show Debugging UI* on, *JIT → Enable JIT block profiling* (on before the game starts) and
+*JIT → Write JIT block log dump* (with the game running, after playing a while) write
+`Dump/Debug/JitBlocks/ID-tc_wii.txt` in Dolphin's user folder: every block of code with how often it ran and the cycles
+it took, named after the function it belongs to. Run `build-wii/tc_wii.elf` rather than the `.dol` so Dolphin has the
+names. Dolphin does not model the CPU's caches, so a real Wii may differ.
 
 **Still to do:**
-1. More speed: the DSP's busy-wait loops (the engine can fast-forward them, but Time Crisis's has not been found yet), the
-   sound CPU and the C352, and the geometry stage.
-2. Play the sound through ASND.
+1. More speed: the master DSP (it runs one translated instruction per call), the sound CPU, the geometry stage, and the
+   translated 68K itself.
+2. A sky texture is missing in one of the cut-scenes.
 3. The mixer's gamma, which is not applied yet.
 
 The porting notes are in [WII_PORT_PLAN.md](WII_PORT_PLAN.md).

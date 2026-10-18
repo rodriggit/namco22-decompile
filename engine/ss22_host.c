@@ -37,7 +37,6 @@
 static const ss22_host_game *game;
 static bool paused, shot_pending, headless_open, restart_req;
 static wii_platform_input wii_input;
-static int16_t wii_audio_buffer[2048];
 
 bool ss22_host_active(void) { return true; }
 bool ss22_host_restart_requested(void) { return false; }
@@ -58,7 +57,7 @@ bool ss22_host_open(const ss22_host_game *g, int scale, bool fs)
             .audio_enabled = true,
         };
         const wii_platform_audio audio = {
-            .sample_rate = 32000,
+            .sample_rate = 48000,                       /* the DSP's mixing rate: ASND plays the voice without resampling */
             .channels = 2,
             .bits_per_sample = 16,
         };
@@ -67,6 +66,10 @@ bool ss22_host_open(const ss22_host_game *g, int scale, bool fs)
     }
     memset(&wii_input, 0, sizeof(wii_input));
     if (game && game->input_init) game->input_init();     /* the cabinet's controls (engine/ss22_input_wii.c), as the desktop host does */
+    if (game) {                                           /* the sound, as the desktop host does: the chip's output into the ASND ring */
+        eng_audio_set_gain(game->out_gain);
+        if (eng_audio_open() && game->snd_set_output) game->snd_set_output(true);
+    }
     fprintf(stderr, "[WII] host stub initialized for %s\n", game ? game->title : "Time Crisis");
     return true;
 }
@@ -112,16 +115,27 @@ bool ss22_host_frame(void)
     ss22_draw(640, 480);
     const uint64_t t1 = wii_port_usec();
     wii_port_gx_present();
-    wii_port_submit_audio(wii_audio_buffer, sizeof(wii_audio_buffer) / sizeof(wii_audio_buffer[0]));
     last_end = wii_port_usec();
     acc_draw += t1 - t0;
     acc_present += last_end - t1;
 
     if (++frames % 120u == 0u) {
         const double k = 1.0 / (120.0 * 1000.0);
-        wii_port_log("[WII-HOST] frame %u: ms per frame emu %.1f draw %.1f present %.1f = %.1f (%.1f fps)", frames,
-                     acc_emu * k, acc_draw * k, acc_present * k, (acc_emu + acc_draw + acc_present) * k,
-                     (acc_emu + acc_draw + acc_present) ? 120.0 * 1e6 / (double)(acc_emu + acc_draw + acc_present) : 0.0);
+        static uint32_t ur_seen, rs_seen, wr_seen, co_seen, cb_seen, bz_seen;
+        const uint32_t ur = wii_port_audio_underruns(), rs = wii_port_audio_restarts();
+        uint32_t wr, co, cb, bz;
+        wii_port_audio_counts(&wr, &co, &cb, &bz);
+        const double hz = (double)wii_port_audio_rate(), real_s = (acc_emu + acc_draw + acc_present) / 1e6;
+        wii_port_log("[WII-HOST] frame %u: ms per frame emu %.1f draw %.1f present %.1f = %.1f (%.1f fps) | sound: %u ms queued, "
+                     "ran dry %u times, voice restarted %u times, made %.1f ms a frame (16.7 at full speed), played %.0f ms a second "
+                     "(ASND asked %.0f times a second, refused %.0f)",
+                     frames, acc_emu * k, acc_draw * k, acc_present * k, (acc_emu + acc_draw + acc_present) * k,
+                     (acc_emu + acc_draw + acc_present) ? 120.0 * 1e6 / (double)(acc_emu + acc_draw + acc_present) : 0.0,
+                     (unsigned)(wii_port_audio_queued() * 1000u / wii_port_audio_rate()), (unsigned)(ur - ur_seen),
+                     (unsigned)(rs - rs_seen), (wr - wr_seen) * 1000.0 / hz / 120.0,
+                     real_s > 0 ? (co - co_seen) * 1000.0 / hz / real_s : 0.0,
+                     real_s > 0 ? (cb - cb_seen) / real_s : 0.0, real_s > 0 ? (bz - bz_seen) / real_s : 0.0);
+        ur_seen = ur; rs_seen = rs; wr_seen = wr; co_seen = co; cb_seen = cb; bz_seen = bz;
         acc_emu = acc_draw = acc_present = 0;
     }
     return true;

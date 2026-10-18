@@ -99,8 +99,22 @@ void wii_port_begin_frame(void);
 void wii_port_end_frame(const wii_platform_frame *frame);
 void wii_port_submit_frame(const wii_platform_frame *frame);
 void wii_port_show_status(const char *text);
+/* Interleaved L/R frames at wii_port_audio_rate() into the sound ring (sample_count = 2 x frames); what does not fit
+ * is dropped. Nothing plays before wii_port_audio_open. */
 void wii_port_submit_audio(const int16_t *samples, size_t sample_count);
+/* Start the ASND stereo voice that plays the ring; false (and a log line) if it cannot. */
+bool wii_port_audio_open(void);
+uint32_t wii_port_audio_rate(void);
+/* Frames waiting in the ring, and how many times it has run dry since the start. */
+uint32_t wii_port_audio_queued(void);
+uint32_t wii_port_audio_underruns(void);
+/* Since the start: frames handed to the ring, frames given to the voice, ASND's callbacks and the buffers it refused. */
+void wii_port_audio_counts(uint32_t *written, uint32_t *consumed, uint32_t *callbacks, uint32_t *busy);
+/* How many times the ASND voice had stopped and was started again. */
+uint32_t wii_port_audio_restarts(void);
 void *wii_port_mem2_alloc(size_t size, size_t align);
+/* From what MEM1's arena still has (the heap leaves it behind once it moves to MEM2); NULL if it does not fit. Never freed. */
+void *wii_port_mem1_alloc(size_t size, size_t align);
 /* Free MEM1/MEM2 arena bytes and the largest block malloc can still return, as one log line. */
 void wii_port_mem_report(char *buf, size_t n);
 

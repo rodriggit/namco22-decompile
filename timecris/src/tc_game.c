@@ -39,11 +39,17 @@ static bool tc_load_program(const char *dir)
         char p[1024]; snprintf(p, sizeof p, "%s/%s", dir, lane[l]);
         FILE *f = fopen(p, "rb");
         if (!f) { fprintf(stderr, "cannot open %s\n", p); return false; }
-        for (uint32_t i = 0; i < SS22_ROM_SIZE / 4; i++) {
-            int c = fgetc(f);
-            if (c == EOF) { fclose(f); fprintf(stderr, "short %s\n", p); return false; }
-            g_ss22.rom[i * 4 + (uint32_t)l] = (uint8_t)c;
+        /* in 64 KB reads: one fgetc a byte took and released the stream's lock four million times, which on the Wii was
+         * most of the boot (Dolphin's block profile: fgetc and the lock calls, ~70% of the time) */
+        enum { CHUNK = 0x10000 };
+        uint8_t *chunk = malloc(CHUNK);
+        if (!chunk) { fclose(f); fprintf(stderr, "no memory to read %s\n", p); return false; }
+        for (uint32_t i = 0; i < SS22_ROM_SIZE / 4; ) {
+            const uint32_t want = SS22_ROM_SIZE / 4 - i < CHUNK ? SS22_ROM_SIZE / 4 - i : (uint32_t)CHUNK;
+            if (fread(chunk, 1, want, f) != want) { free(chunk); fclose(f); fprintf(stderr, "short %s\n", p); return false; }
+            for (uint32_t k = 0; k < want; k++, i++) g_ss22.rom[i * 4 + (uint32_t)l] = chunk[k];
         }
+        free(chunk);
         fclose(f);
     }
     return true;
@@ -212,7 +218,8 @@ static const ss22_game game = {
     .board = &tc_board,
     .dsp = { { {"ts1ptrl0.18k", "ts1ptrl1.16k", "ts1ptrl2.15k"},
                {"ts1ptrm0.18j", "ts1ptrm1.16j", "ts1ptrm2.15j"},
-               {"ts1ptru0.18f", "ts1ptru1.16f", "ts1ptru2.15f"} }, 3, tc_c25_exec },        /* three planes of three chips (Prop Cycle's shape); no busy-wait poll measured yet */
+               {"ts1ptru0.18f", "ts1ptru1.16f", "ts1ptru2.15f"} }, 3, tc_c25_exec },        /* three planes of three chips (Prop Cycle's shape); no LAC / BNEZ-self poll: none
+                                                                                                * found in any loaded program (tried at 0x45DD and anywhere, never hit) */
     .snd = { "ts1data.8k", { "ts1wavea.2l", "ts1waveb.1l" }, { 0, 0x800000 }, 0x1000000, 0xFFFF, { 1, 2 }, { true, false } },   /* MAME's c352 region: ts1wavea.2l at 0 (ROM_LOAD16_WORD_SWAP), ts1waveb.1l at 0x800000 */
     .video = { { "ts1cg0.8d", "ts1cg1.10d", "ts1cg2.12d", "ts1cg3.13d", "ts1cg4.14d", "ts1cg5.16d", "ts1cg6.18d", NULL },
                "ts1ccrl.3d", "ts1ccrh.1d",

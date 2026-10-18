@@ -125,6 +125,8 @@ if(TC_WII_PORT)
       ${CMAKE_CURRENT_SOURCE_DIR}/wii/port.c
   )
   add_executable(tc_wii ${TC_CORE_SRC} ${TC_WII_SRC})
+  # build-wii/tc_wii.elf: Dolphin opens an ELF by its extension (the bare name was not recognised)
+  set_target_properties(tc_wii PROPERTIES SUFFIX ".elf")
   target_compile_definitions(tc_wii PRIVATE __WII__)
     # -O2: the engine (board, DSP and sound hosts, sprites, text, geometry, the GX renderer) has no -O of its own and the
     # toolchain sets no build type, so it was built at -O0. The generated sources keep their own -O (set per file above, later

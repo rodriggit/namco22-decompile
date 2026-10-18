@@ -7,7 +7,9 @@
 
 #ifdef __WII__
 #include <gccore.h>
+#include <malloc.h>
 #include <ogc/lwp_watchdog.h>
+#include <ogc/machine/processor.h>                   /* _CPU_ISR_Disable / _CPU_ISR_Restore */
 #include <asndlib.h>
 #include <fat.h>
 #include <ogc/gx.h>
@@ -150,10 +152,30 @@ static u32 wii_port_fbb = 0;
 static GXRModeObj *wii_port_rmode = NULL;
 static unsigned char *wii_port_gx_fifo;
 static const uint32_t wii_port_gx_fifo_size = 256u * 1024u;
-static int16_t wii_port_audio_ring[4096];
-static size_t wii_port_audio_count = 0;
-static size_t wii_port_audio_head = 0;
-static size_t wii_port_audio_tail = 0;
+/* THE SOUND: one ASND stereo voice at the output rate, fed from a ring of L/R frames. The game writes the ring
+ * (wii_port_submit_audio, from engine/audio_out.c's resampler); ASND's voice callback, in interrupt context, takes
+ * WII_AUDIO_CHUNK frames at a time into one of three DMA buffers (one playing, one queued, one being filled). Single
+ * producer, single consumer, one core: free-running frame counters, the data stored before the counter that publishes it.
+ * The ring plays only once it holds WII_AUDIO_CUSHION; when it runs dry the last sample is faded out over a few
+ * milliseconds (a step to silence is a click) and it waits for the cushion again. */
+#define WII_AUDIO_RING    16384u             /* stereo frames, a power of two: 341 ms at 48 kHz */
+/* frames a DMA buffer: 42.7 ms at 48 kHz (a multiple of 8: 32-byte DMA). 512 (10.7 ms) played at half the rate -- one buffer per
+ * ~21 ms, the length of ASND's own mixing block -- and sounded an octave down. */
+#define WII_AUDIO_CHUNK   2048u
+#define WII_AUDIO_CUSHION 4096u              /* 85 ms at 48 kHz: two buffers' worth before the voice is fed sound */
+#define WII_AUDIO_FADE    240u               /* 5 ms */
+static int16_t *wii_audio_ring;
+static int16_t *wii_audio_dma[3];
+static unsigned wii_audio_dma_next;
+static volatile uint32_t wii_audio_head, wii_audio_tail;
+static volatile uint32_t wii_audio_underruns;
+static uint32_t wii_audio_written;           /* frames the game handed over (kept or not), for the log */
+static volatile uint32_t wii_audio_buffers;  /* DMA buffers given to the voice: x WII_AUDIO_CHUNK = frames consumed */
+static volatile uint32_t wii_audio_callbacks, wii_audio_busy;   /* ASND's calls for more, and buffers it refused (SND_BUSY) */
+static bool wii_audio_primed, wii_audio_voice_on;
+static int wii_audio_voice = -1;
+static int16_t wii_audio_last[2];
+#define WII_BARRIER() __asm__ __volatile__("" ::: "memory")
 
 static uint32_t wii_port_frame_pitch(uint32_t width)
 {
@@ -353,9 +375,10 @@ void wii_port_shutdown(void)
         wii_port_video_ready = false;
     }
     wii_port_ax_started = false;
-    wii_port_audio_count = 0;
-    wii_port_audio_head = 0;
-    wii_port_audio_tail = 0;
+    wii_audio_voice_on = false;
+    wii_audio_voice = -1;
+    wii_audio_head = wii_audio_tail = 0;
+    wii_audio_primed = false;
     wii_port_xfb[0] = NULL;
     wii_port_xfb[1] = NULL;
     wii_port_rmode = NULL;
@@ -636,33 +659,180 @@ void wii_port_show_status(const char *text)
 #endif
 }
 
+#ifdef __WII__
+/* one DMA buffer's worth from the ring (interrupt context) */
+static void wii_audio_fill(int16_t *dst)
+{
+    static unsigned fade_out, fade_in;             /* samples left of the fade to silence / of the fade back in */
+    uint32_t t = wii_audio_tail;
+    const uint32_t h = wii_audio_head;
+    WII_BARRIER();
+    if (!wii_audio_primed && !fade_out && h - t >= WII_AUDIO_CUSHION) { wii_audio_primed = true; fade_in = WII_AUDIO_FADE; }
+    for (unsigned i = 0; i < WII_AUDIO_CHUNK; i++) {
+        int l = 0, r = 0;
+        if (wii_audio_primed && t == h) {          /* ran dry: fade the last sample out, then wait for the cushion */
+            wii_audio_primed = false; wii_audio_underruns++;
+            fade_out = WII_AUDIO_FADE;
+        }
+        if (wii_audio_primed) {
+            l = wii_audio_ring[(t & (WII_AUDIO_RING - 1u)) * 2u];
+            r = wii_audio_ring[(t & (WII_AUDIO_RING - 1u)) * 2u + 1u];
+            t++;
+            if (fade_in) { l = l * (int)(WII_AUDIO_FADE - fade_in) / (int)WII_AUDIO_FADE;
+                           r = r * (int)(WII_AUDIO_FADE - fade_in) / (int)WII_AUDIO_FADE; fade_in--; }
+            wii_audio_last[0] = (int16_t)l; wii_audio_last[1] = (int16_t)r;
+        } else if (fade_out) {
+            fade_out--;
+            l = wii_audio_last[0] * (int)fade_out / (int)WII_AUDIO_FADE;
+            r = wii_audio_last[1] * (int)fade_out / (int)WII_AUDIO_FADE;
+        }
+        dst[i * 2u] = (int16_t)l; dst[i * 2u + 1u] = (int16_t)r;
+    }
+    WII_BARRIER();
+    wii_audio_tail = t;
+    DCFlushRange(dst, WII_AUDIO_CHUNK * 4u);
+}
+
+static uint32_t wii_audio_restarts;
+static void wii_audio_cb(s32 voice);
+
+static int16_t *wii_audio_next_buffer(void)
+{
+    int16_t *b = wii_audio_dma[wii_audio_dma_next];
+    wii_audio_dma_next = (wii_audio_dma_next + 1u) % 3u;
+    wii_audio_fill(b);
+    return b;
+}
+
+/* Keep the voice fed: queue a buffer in its free slot, and start it again if it ran out and stopped (ASND stops a voice
+ * whose buffers end before a new one is added). From the callback and from the game's writes, with interrupts off so
+ * the two cannot interleave. */
+static void wii_audio_pump(void)
+{
+    if (!wii_audio_voice_on) return;
+    u32 level;
+    _CPU_ISR_Disable(level);
+    if (ASND_StatusVoice(wii_audio_voice) == SND_UNUSED) {
+        int16_t *b = wii_audio_next_buffer();
+        ASND_SetVoice(wii_audio_voice, VOICE_STEREO_16BIT, (s32)wii_port_audio_sample_rate, 0, b, (s32)(WII_AUDIO_CHUNK * 4u),
+                      MAX_VOLUME, MAX_VOLUME, wii_audio_cb);
+        wii_audio_restarts++;
+    }
+    /* ASND_AddVoice answers SND_BUSY while the voice's second buffer is still taken: a filled buffer it refuses stays
+     * pending and is offered again, so no sound is taken from the ring and then lost */
+    static int16_t *pending;
+    if (!pending && ASND_TestVoiceBufferReady(wii_audio_voice)) pending = wii_audio_next_buffer();
+    if (pending) {
+        if (ASND_AddVoice(wii_audio_voice, pending, (s32)(WII_AUDIO_CHUNK * 4u)) == SND_OK) {
+            pending = NULL;
+            wii_audio_buffers++;
+        } else wii_audio_busy++;
+    }
+    _CPU_ISR_Restore(level);
+}
+
+static void wii_audio_cb(s32 voice)
+{
+    (void)voice;
+    wii_audio_callbacks++;
+    wii_audio_pump();
+}
+#endif
+
+bool wii_port_audio_open(void)
+{
+#ifdef __WII__
+    if (wii_audio_voice_on) return true;
+    wii_port_start_ax();
+    if (!wii_audio_ring) wii_audio_ring = malloc(WII_AUDIO_RING * 4u);
+    for (int i = 0; i < 3; i++)
+        if (!wii_audio_dma[i]) wii_audio_dma[i] = memalign(32, WII_AUDIO_CHUNK * 4u);
+    if (!wii_audio_ring || !wii_audio_dma[0] || !wii_audio_dma[1] || !wii_audio_dma[2]) {
+        wii_port_log("[WII-AUDIO] cannot allocate the sound buffers");
+        return false;
+    }
+    for (int i = 0; i < 3; i++) { memset(wii_audio_dma[i], 0, WII_AUDIO_CHUNK * 4u); DCFlushRange(wii_audio_dma[i], WII_AUDIO_CHUNK * 4u); }
+    wii_audio_head = wii_audio_tail = 0;
+    wii_audio_primed = false;
+    wii_audio_voice = ASND_GetFirstUnusedVoice();
+    if (wii_audio_voice < 0) wii_audio_voice = 0;
+    wii_audio_dma_next = 1;
+    if (ASND_SetVoice(wii_audio_voice, VOICE_STEREO_16BIT, (s32)wii_port_audio_sample_rate, 0, wii_audio_dma[0],
+                      (s32)(WII_AUDIO_CHUNK * 4u), MAX_VOLUME, MAX_VOLUME, wii_audio_cb) != SND_OK) {
+        wii_port_log("[WII-AUDIO] ASND_SetVoice failed");
+        return false;
+    }
+    ASND_Pause(0);
+    wii_audio_voice_on = true;
+    wii_port_log("[WII-AUDIO] sound on: voice %d, %u Hz stereo, %u-frame buffers, %u ms cushion", wii_audio_voice,
+                 (unsigned)wii_port_audio_sample_rate, WII_AUDIO_CHUNK, WII_AUDIO_CUSHION * 1000u / wii_port_audio_sample_rate);
+    return true;
+#else
+    return false;
+#endif
+}
+
+uint32_t wii_port_audio_rate(void) { return wii_port_audio_sample_rate; }
+
+uint32_t wii_port_audio_queued(void)
+{
+#ifdef __WII__
+    return wii_audio_head - wii_audio_tail;
+#else
+    return 0;
+#endif
+}
+
+void wii_port_audio_counts(uint32_t *written, uint32_t *consumed, uint32_t *callbacks, uint32_t *busy)
+{
+#ifdef __WII__
+    if (written) *written = wii_audio_written;
+    if (consumed) *consumed = wii_audio_buffers * WII_AUDIO_CHUNK;
+    if (callbacks) *callbacks = wii_audio_callbacks;
+    if (busy) *busy = wii_audio_busy;
+#else
+    if (written) *written = 0;
+    if (consumed) *consumed = 0;
+    if (callbacks) *callbacks = 0;
+    if (busy) *busy = 0;
+#endif
+}
+
+uint32_t wii_port_audio_restarts(void)
+{
+#ifdef __WII__
+    return wii_audio_restarts;
+#else
+    return 0;
+#endif
+}
+
+uint32_t wii_port_audio_underruns(void)
+{
+#ifdef __WII__
+    return wii_audio_underruns;
+#else
+    return 0;
+#endif
+}
+
+/* interleaved L/R frames into the ring; what does not fit is dropped */
 void wii_port_submit_audio(const int16_t *samples, size_t sample_count)
 {
 #ifdef __WII__
-    if (!samples || sample_count == 0) {
-        return;
+    if (!samples || sample_count < 2 || !wii_audio_voice_on) return;
+    const uint32_t frames = (uint32_t)(sample_count / 2u);
+    wii_audio_written += frames;
+    uint32_t h = wii_audio_head;
+    const uint32_t t = wii_audio_tail;
+    WII_BARRIER();
+    for (uint32_t i = 0; i < frames && h - t < WII_AUDIO_RING; i++, h++) {
+        wii_audio_ring[(h & (WII_AUDIO_RING - 1u)) * 2u] = samples[i * 2u];
+        wii_audio_ring[(h & (WII_AUDIO_RING - 1u)) * 2u + 1u] = samples[i * 2u + 1u];
     }
-
-    if (!wii_port_ready || !wii_port_audio_ready) {
-        return;
-    }
-
-    wii_port_start_ax();
-
-    const size_t limit = sizeof(wii_port_audio_ring) / sizeof(wii_port_audio_ring[0]);
-    size_t copied = 0;
-    while (copied < sample_count) {
-        const int16_t v = samples[copied++];
-        wii_port_audio_ring[wii_port_audio_head] = v;
-        wii_port_audio_head = (wii_port_audio_head + 1u) % limit;
-        if (wii_port_audio_count < limit) {
-            wii_port_audio_count++;
-        } else {
-            wii_port_audio_tail = (wii_port_audio_tail + 1u) % limit;
-        }
-    }
-
-    ASND_Pause(0);
+    WII_BARRIER();
+    wii_audio_head = h;
+    wii_audio_pump();
 #else
     (void)samples;
     (void)sample_count;
@@ -683,6 +853,31 @@ void *wii_port_mem2_alloc(size_t size, size_t align)
 
     SYS_SetArena2Lo((void *)end);
     return (void *)p;
+#else
+    (void)size;
+    (void)align;
+    return NULL;
+#endif
+}
+
+/* The same from MEM1's arena. libogc's heap takes MEM1 first and moves to MEM2 for good once a request does not fit, so what
+ * MEM1 had left at that moment is never used again -- 3.9 MB once the lifted 68K shrank, while MEM2 ran out. Allocating it
+ * here moves the arena's start past the block, as the heap itself does, so the two never overlap. Never freed. */
+void *wii_port_mem1_alloc(size_t size, size_t align)
+{
+#ifdef __WII__
+    if (align == 0) align = 32;
+    if (align & (align - 1)) return NULL;
+    u32 level;
+    _CPU_ISR_Disable(level);
+    uintptr_t lo = (uintptr_t)SYS_GetArena1Lo();
+    uintptr_t hi = (uintptr_t)SYS_GetArena1Hi();
+    uintptr_t p = (lo + (uintptr_t)(align - 1)) & ~(uintptr_t)(align - 1);
+    uintptr_t end = p + size;
+    void *r = NULL;
+    if (end >= p && end <= hi) { SYS_SetArena1Lo((void *)end); r = (void *)p; }
+    _CPU_ISR_Restore(level);
+    return r;
 #else
     (void)size;
     (void)align;

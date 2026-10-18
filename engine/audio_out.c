@@ -180,11 +180,56 @@ void eng_audio_close(void)
 
 #else
 
-bool eng_audio_open(void) { return true; }
-void eng_audio_set_gain(double gain) { (void)gain; }
-void eng_audio_set_mix(const float m[2][4]) { (void)m; }
-void eng_audio_set_volume(int percent) { (void)percent; }
-void eng_audio_push(const int16_t *in4, int n) { (void)in4; (void)n; }
-void eng_audio_close(void) { }
+/* THE WII: the same resampler and gain as above, into the ASND ring of timecris/wii/port.c (which does the cushion and the
+ * fades the SDL callback does here). The rate follows the ring's fill the same way: +-0.5% near the target, +-2% far off. */
+#include "../timecris/wii/port.h"
+
+static bool wii_open;
+static uint32_t wii_hz = OUT_HZ;
+
+bool eng_audio_open(void)
+{
+    wii_open = wii_port_audio_open();
+    wii_hz = wii_port_audio_rate();
+    return wii_open;
+}
+void eng_audio_set_gain(double gain) { if (gain > 0) g_out_gain = gain; }
+void eng_audio_set_mix(const float m[2][4]) { memcpy(g_mix, m, sizeof g_mix); }
+void eng_audio_set_volume(int percent) { g_volume = (percent < 0 ? 0 : percent > 100 ? 100 : percent) / 100.0f; }
+
+void eng_audio_push(const int16_t *in4, int n)
+{
+    if (!wii_open || n <= 0) return;
+    static int16_t out[2 * 1024];                         /* a 512-frame chip block makes ~290 frames at 48 kHz */
+    const int target = (int)(wii_hz * 100u / 1000u);      /* above port.c's 85 ms cushion: the voice takes 43 ms buffers */
+    const int fill = (int)wii_port_audio_queued();
+    const double err = (double)(target - fill) / target;
+    const double lim = (err > 1.0 || err < -1.0) ? 0.02 : 0.005;
+    double adj = 1.0 + err * 0.005 * ((err > 1.0 || err < -1.0) ? 4 : 1);
+    if (adj > 1.0 + lim) adj = 1.0 + lim;
+    if (adj < 1.0 - lim) adj = 1.0 - lim;
+    const double step = 85333.333 / wii_hz / adj;         /* input samples per output sample */
+    int k = 0;
+    while (rs_pos < n && k < 1024) {
+        const int i = (int)rs_pos; const double f = rs_pos - i;
+        double s[4];
+        for (int c = 0; c < 4; c++) {
+            const double a = i == 0 ? rs_prev[c] : in4[(i - 1) * 4 + c], b = in4[i * 4 + c];
+            s[c] = a + (b - a) * f;
+        }
+        for (int ch = 0; ch < 2; ch++) {
+            const double v = soft_limit((s[0] * g_mix[ch][0] + s[1] * g_mix[ch][1] + s[2] * g_mix[ch][2] + s[3] * g_mix[ch][3]) * g_volume * g_out_gain);
+            out[k * 2 + ch] = (int16_t)(v < 0 ? v - 0.5 : v + 0.5);
+        }
+        k++;
+        rs_pos += step;
+    }
+    rs_pos -= n;
+    if (rs_pos < 0) rs_pos = 0;
+    memcpy(rs_prev, &in4[(n - 1) * 4], sizeof rs_prev);
+    wii_port_submit_audio(out, (size_t)k * 2u);
+}
+
+void eng_audio_close(void) { wii_open = false; }
 
 #endif
