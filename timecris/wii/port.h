@@ -93,6 +93,7 @@ bool wii_port_is_ready(void);
 void wii_port_configure(const wii_platform_config *config);
 void wii_port_setup_audio(const wii_platform_audio *audio);
 void wii_port_poll_input(wii_platform_input *input);
+void wii_port_rumble(bool on);          /* the Wiimote's motor: on or off, it has no strength */
 /* The range gun_x / gun_y span (the WPAD virtual resolution set at configure time). */
 void wii_port_ir_size(uint32_t *w, uint32_t *h);
 void wii_port_begin_frame(void);
@@ -122,7 +123,7 @@ void wii_port_mem_report(char *buf, size_t n);
 bool wii_port_gx_ready(void);
 /* Copy the EFB to the next XFB, wait for the GPU, flip at the next vsync. */
 void wii_port_gx_present(void);
-/* One printf-style line appended to the boot log (wii_boot.log, next to the ROM folders): the only log a player can read. */
+/* One printf-style line appended to the boot log (sd:/wii_boot.log, at the card's root): the only log a player can read. */
 void wii_port_log(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 /* Microseconds since an arbitrary start (the PowerPC time base), for the per-stage timings in the log. */
 uint64_t wii_port_usec(void);

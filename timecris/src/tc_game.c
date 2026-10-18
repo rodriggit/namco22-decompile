@@ -14,6 +14,9 @@
 #include "ss22_game.h"
 #include "lift_cpu.h"
 #include "tc_lifted.h"
+#if defined(__WII__) || defined(__wii__)
+#include "../wii/port.h"
+#endif
 
 bool tc_c25_exec(c71_t *d, int pc);          /* gen/tc_c25.c */
 extern bool (*const tc_c25_exec_pages[256])(c71_t *d, int pc);   /* gen/tc_c25.c: the same dispatch, by page */
@@ -172,6 +175,16 @@ static void tc_frame(long n)
         last_mode = g_ss22.wram[TC_W_MODE]; last_lives = g_ss22.wram[TC_W_LIVES];
         fprintf(stderr, "[LIVES] frame %ld mode %d lives %d\n", n, last_mode, last_lives);
     }
+#if defined(__WII__) || defined(__wii__)
+    { static int seen = -1, seen_mode = -1;  /* the player hit: in a game every hit costs a life, so the lives byte going down is one */
+      const int mode = g_ss22.wram[TC_W_MODE];
+      /* compared in every mode but booting (0) and the attract demo (2), whose lives are not the player's: watching mode 3
+       * alone never saw a hit (the lives presumably drop while the game is in another mode for the hit) */
+      const int l = (n >= 600 && mode != 0 && mode != 2) ? g_ss22.wram[TC_W_LIVES] : -1;
+      if (l >= 0 && seen >= 0 && l < seen) ss22_input_rumble(0xFFFF, 0xFFFF, 400);   /* strong, against the soft one of each shot */
+      if (l != seen && l >= 0) wii_port_log("[WII-IN] lives %d -> %d (mode %d -> %d)", seen, l, seen_mode, mode);
+      seen = l; seen_mode = mode; }
+#endif
     if (n < 600 || g_ss22.wram[TC_W_MODE] != 3) { most_lives = 0; return; }
     if (inf_time) { const uint16_t t = wram16(TC_W_TIMER); if (t > 0 && t < 600) wram16_set(TC_W_TIMER, 3600); }
     if (inf_life) {

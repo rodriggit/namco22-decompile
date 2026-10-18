@@ -741,6 +741,36 @@ static void gx_rect(uint8_t r, uint8_t g, uint8_t b, uint8_t a)
     GX_End();
 }
 
+static void gx_box(float x0, float y0, float x1, float y1, uint8_t r, uint8_t g, uint8_t b)
+{
+    GX_Begin(GX_QUADS, GX_VTXFMT2, 4);
+    GX_Position3f32(x0, y0, -0.5f); GX_Color4u8(r, g, b, 255);
+    GX_Position3f32(x1, y0, -0.5f); GX_Color4u8(r, g, b, 255);
+    GX_Position3f32(x1, y1, -0.5f); GX_Color4u8(r, g, b, 255);
+    GX_Position3f32(x0, y1, -0.5f); GX_Color4u8(r, g, b, 255);
+    GX_End();
+}
+
+/* The gun's crosshair, over everything, where the Wiimote points (the game gets the same position, engine/ss22_input_wii.c):
+ * the PC's cross (engine/ss22_host.c), four red arms with a gap in the middle on a dark outline. None while it points off the
+ * screen. */
+bool ss22_input_aim(float *nx, float *ny);
+static void gx_crosshair(void)
+{
+    float ax, ay;
+    if (!ss22_input_aim(&ax, &ay)) return;
+    const float cx = ax * (float)SW, cy = ay * (float)SH, s = (float)SH / 24.0f, g = s * 0.3f;
+    gx_mode_flat(false);
+    for (int pass = 0; pass < 2; pass++) {
+        const float w = pass ? 1.0f : 2.0f, e = pass ? 0.0f : 1.0f;    /* half thickness; the outline also reaches 1 px further */
+        const uint8_t r = pass ? 255 : 0, gb = pass ? 26 : 0;
+        gx_box(cx - s - e, cy - w, cx - g + e, cy + w, r, gb, gb);
+        gx_box(cx + g - e, cy - w, cx + s + e, cy + w, r, gb, gb);
+        gx_box(cx - w, cy - s - e, cx + w, cy - g + e, r, gb, gb);
+        gx_box(cx - w, cy + g - e, cx + w, cy + s + e, r, gb, gb);
+    }
+}
+
 /* an RGB5A3 picture (a sprite, the text layer) blended over the frame at (x, y), w x h of its tw x th texels */
 static void gx_mode_tex2d(void)
 {
@@ -1070,6 +1100,7 @@ void ss22_draw(int vw, int vh)
         for (int i = 0; i < ni; i++)                  /* the sprites over the text layer, over it again */
             if (items[i].prioverchar) draw_sprite(i);
     }
+    gx_crosshair();
     GX_Flush();
     st_gx += wii_port_usec() - t0;
     stats_frame();

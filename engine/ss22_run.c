@@ -92,7 +92,7 @@ static void wii_boot_log(const char *fmt, ...)
     fflush(stderr);
 
     va_start(ap, fmt);
-    FILE *fp = fopen("wii_boot.log", "a");
+    FILE *fp = fopen("sd:/wii_boot.log", "a");          /* the card's root, as wii_port_log (timecris/wii/port.c) */
     if (fp) {
         vfprintf(fp, fmt, ap);
         fclose(fp);

@@ -546,6 +546,15 @@ void wii_port_poll_input(wii_platform_input *input)
 #endif
 }
 
+void wii_port_rumble(bool on)
+{
+#ifdef __WII__
+    WPAD_Rumble(WPAD_CHAN_0, on ? 1 : 0);
+#else
+    (void)on;
+#endif
+}
+
 void wii_port_ir_size(uint32_t *w, uint32_t *h)
 {
     /* wii_port_configure passes these to WPAD_SetVRes. */
@@ -922,7 +931,7 @@ void wii_port_log(const char *fmt, ...)
 {
     va_list ap;
     va_start(ap, fmt);
-    FILE *fp = fopen("wii_boot.log", "a");
+    FILE *fp = fopen("sd:/wii_boot.log", "a");          /* the card's root however the game was started (the Homebrew Channel makes its folder current) */
     if (fp) {
         vfprintf(fp, fmt, ap);
         fputc('\n', fp);

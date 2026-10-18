@@ -139,6 +139,11 @@ The **Wii Remote is the gun**: aim with the IR pointer and shoot with the **B** 
 
 **To reload**, aim **off the screen** and shoot, as on the arcade.
 
+A red **crosshair** shows where the Wii Remote points (it is hidden while it points off the screen). The Wii Remote
+**rumbles**: a short tap on each shot (fired by the gun's recoil output, as the arcade's solenoid; at most one every
+150 ms, so a burst does not turn into one long buzz) and a strong one when the player is hit (the game's lives counter
+going down).
+
 **In Dolphin**, the Wii Remote's buttons are mapped to keyboard keys or a pad in *Controllers → Wii Remote 1 →
 Configure*. The mouse can drive the IR pointer. The game needs **B and the pedal held together** (you shoot while out of
 cover): if shooting stops working while the pedal is held, Dolphin is not passing both inputs at once. Map them to inputs
