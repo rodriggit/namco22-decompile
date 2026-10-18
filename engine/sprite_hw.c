@@ -51,13 +51,14 @@ uint8_t *g_sprite_tiles;
 size_t   g_sprite_tiles_size;
 int      g_sprite_vics_count_in_list;
 static uint32_t *live_spr, *live_vicsd;
+static const void *board_spr, *board_vicsd;  /* the board's own RAM, when a big-endian host reads it in place (sprite_load_regs) */
 
 void sprite_free(sprite_state *st)
 {
     if (!st) return;
     /* live states borrow their buffers; only file-loaded ones own them */
-    if (st->spr   != live_spr)   free(st->spr);
-    if (st->vicsd != live_vicsd) free(st->vicsd);
+    if (st->spr   != live_spr   && (const void *)st->spr   != board_spr)   free(st->spr);
+    if (st->vicsd != live_vicsd && (const void *)st->vicsd != board_vicsd) free(st->vicsd);
     st->spr = NULL; st->vicsd = NULL;
     if (st->owns_pal) free((void *)st->pal);
     st->pal = NULL; st->owns_pal = 0; st->valid = 0;
@@ -577,7 +578,14 @@ int sprite_load_regs(sprite_state *st, const uint8_t *spriteram, size_t spritera
     int n = (int)(spriteram_size / 4);
     int vn = (int)(vics_size / 4);
 #if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
-    /* a big-endian host (the Wii) holds the words as they are: the byte-by-byte build of 200 KB a frame was ~4% of its time */
+    /* a big-endian host (the Wii) holds the words as they are: read in place when word-aligned (the board state is), which
+     * saves copying 256 KB a drawn frame -- the caller draws before anything changes them. Copied otherwise. */
+    if (!((uintptr_t)b & 3) && !((uintptr_t)vics_data & 3)) {
+        st->spr = (uint32_t *)(uintptr_t)b; st->spr_n = n;
+        st->vicsd = (uint32_t *)(uintptr_t)vics_data; st->vicsd_n = vn;
+        board_spr = b; board_vicsd = vics_data;
+        goto loaded;
+    }
     memcpy(live_spr, b, (size_t)n * 4);
     memcpy(live_vicsd, vics_data, (size_t)vn * 4);
 #else
@@ -591,7 +599,9 @@ int sprite_load_regs(sprite_state *st, const uint8_t *spriteram, size_t spritera
 #endif
     st->spr = live_spr; st->spr_n = n;
     st->vicsd = live_vicsd; st->vicsd_n = vn;
-
+#if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
+loaded:
+#endif
     for (int i = 0; i < 0x20; i++) st->vicsc[i] = vics_ctl[i];
     st->have_vics = 1;
     st->pal = pal; st->owns_pal = 0;         /* borrowed, not owned */

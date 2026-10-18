@@ -487,6 +487,7 @@ static void sprites_render(uint32_t frame)
 
 /* ------------------------------------------------------------------ the text layer, cached */
 static uint8_t  *cgbuf;                      /* CGRAM with the text RAM as its tail: the text model's layout (ss22_gl.c) */
+static const uint8_t *cgsrc;                 /* what the text model reads this frame: the board's own, or cgbuf */
 static const uint8_t *txt_pal;
 static const uint16_t *txt_spot;
 static bool      txt_spot_on;
@@ -522,13 +523,13 @@ static uint32_t hash_words(uint32_t h, const void *p, size_t n)
 /* tilemap tile (col, row) as a pixel of it reads it: its word in the text RAM and its character's 128 bytes */
 static uint32_t char_hash(int code)
 {
-    if (cstamp[code] != cframe) { cstamp[code] = cframe; chash[code] = hash_words(2166136261u, cgbuf + (size_t)code * 128, 128); }
+    if (cstamp[code] != cframe) { cstamp[code] = cframe; chash[code] = hash_words(2166136261u, cgsrc + (size_t)code * 128, 128); }
     return chash[code];
 }
 
 static uint32_t tile_key(int col, int row)
 {
-    const uint8_t *w = cgbuf + 0x1E000 + ((size_t)row * 64 + (size_t)col) * 2;
+    const uint8_t *w = cgsrc + 0x1E000 + ((size_t)row * 64 + (size_t)col) * 2;
     const uint32_t d = (uint32_t)((w[0] << 8) | w[1]);
     return (d * 2654435761u) ^ char_hash((int)(d & 0x3FF));
 }
@@ -929,9 +930,16 @@ void ss22_prepare(const ss22_regs *r)
     text_set_spot(r->spotram, r->spot_enabled);
     txt_spot = r->spotram; txt_spot_on = r->spotram && r->spot_enabled;
     txt_pal = r->pal;
-    memcpy(cgbuf, r->cgram, 0x1E000);                 /* the text model reads its text RAM at cg + 0x1E000 */
-    memcpy(cgbuf + 0x1E000, r->textram, 0x2000);
-    have_text = text_load_regs(&tst, cgbuf, r->pal, r->tilemapattr) != 0;
+    /* the text model reads its text RAM at cg + 0x1E000: on the board state it is there already (ss22_sys_t: text[] follows
+     * cgram[]), so it reads that in place -- 128 KB a drawn frame less to copy, a few percent of the whole frame on the Wii's
+     * newlib memcpy -- and nothing runs between this and the draw to change it. Anything else is copied as before. */
+    if (r->textram == r->cgram + 0x1E000) cgsrc = r->cgram;
+    else {
+        memcpy(cgbuf, r->cgram, 0x1E000);
+        memcpy(cgbuf + 0x1E000, r->textram, 0x2000);
+        cgsrc = cgbuf;
+    }
+    have_text = text_load_regs(&tst, cgsrc, r->pal, r->tilemapattr) != 0;
 
     ni = 0;
     have_spr = g_sprite_tiles && r->spriteram &&
