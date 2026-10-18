@@ -51,6 +51,10 @@ void (*g_ss22_wram_watch)(uint32_t v, int size);
 
 #if defined(__WII__) || defined(__wii__)
 ss22_sys_t *g_ss22_ptr;
+/* engine/lift_rt.h's in-place reads (MRD1/2/4): the ROM at 0 and the work RAM at 0xE00000, the two plain-memory regions rr_read
+ * serves without a device in between. NULL with the board state not allocated yet: until then every read takes rr_read. */
+const uint8_t *rr_fast_rom, *rr_fast_wram;
+const uint32_t rr_fast_rom_size = SS22_ROM_SIZE, rr_fast_wram_base = 0xE00000u, rr_fast_wram_size = SS22_WRAM_SIZE;
 static void *ss22_wii_arena2_alloc(size_t size, size_t align)
 {
     if (align == 0) align = 32;
@@ -75,6 +79,7 @@ static bool ss22_sys_bootstrap(void)
         return false;
     }
     memset(g_ss22_ptr, 0, sizeof(*g_ss22_ptr));
+    rr_fast_rom = g_ss22.rom; rr_fast_wram = g_ss22.wram;   /* lift_rt.h's in-place reads: the state lives here from now on */
     return true;
 }
 #else

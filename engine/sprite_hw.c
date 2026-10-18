@@ -110,6 +110,7 @@ typedef struct {
     int alpha_enabled, alpha_pen, prioverchar;
     int compose_alpha;
     const uint8_t *fog_rgb, *fade_rgb;
+    const uint8_t (*lut)[3];   /* optional: the 256 pens' colours from pal_base, fog and fade already blended (sprite_render_item) */
 } tile_ctx;
 
 /* Target rectangle for draw_tile: the full 640x480 canvas, or one
@@ -143,6 +144,16 @@ static void draw_tile_dst(const tile_dst *dst, const uint8_t *pal,
     int x0 = sizex > 0 ? sx : sx + sizex + 1;
     int y0 = sizey > 0 ? sy : sy + sizey + 1;
 
+    /* the columns inside every clip at once (screen, clip window, destination box), instead of testing each pixel */
+    int lo = 0, hi = SPR_W - 1;
+    if (c->cxn > lo) lo = c->cxn;
+    if (c->cxx < hi) hi = c->cxx;
+    if (dst->ox > lo) lo = dst->ox;
+    if (dst->ox + dst->w - 1 < hi) hi = dst->ox + dst->w - 1;
+    const int ox_lo = lo - x0 > 0 ? lo - x0 : 0;
+    const int ox_hi = hi - x0 < ssw - 1 ? hi - x0 : ssw - 1;
+    if (ox_lo > ox_hi) return;
+
     for (int oy = 0; oy < ssh; oy++) {
         int py = y0 + oy;
         if (py < 0 || py >= SPR_H || py < c->cyn || py > c->cyx) continue;
@@ -151,23 +162,28 @@ static void draw_tile_dst(const tile_dst *dst, const uint8_t *pal,
         /* PIXEL CENTRE, not edge: MAME rasterises the sprite through
          * poly.h, which samples params at the centre (poly.h:791). Edge
          * sampling shifts every texel half a pixel and shows as +/-1 texel
-         * errors at the edges of a zoomed sprite. */
-        int v = (int)((oy + 0.5) * 32.0 / ssh);
+         * errors at the edges of a zoomed sprite. In integers: (oy + 0.5) * 32 / ssh, truncated, is ((2 oy + 1) * 16) / ssh
+         * exactly (the double quotient of two small integers never rounds across a whole number). */
+        int v = ((2 * oy + 1) * 16) / ssh;
         int tv = flipy ? 31 - v : v;
         const uint8_t *rowb = tilep + tv * 32;
-        for (int ox = 0; ox < ssw; ox++) {
-            int px = x0 + ox;
-            if (px < 0 || px >= SPR_W || px < c->cxn || px > c->cxx) continue;
-            int bx = px - dst->ox;
-            if (bx < 0 || bx >= dst->w) continue;
-            int u = (int)((ox + 0.5) * 32.0 / ssw);
-            int tu = flipx ? 31 - u : u;
-            uint8_t pen = rowb[tu];
+        /* u = ((2 ox + 1) * 16) / ssw, stepped: each column adds 32 to the numerator */
+        int u = ((2 * ox_lo + 1) * 16) / ssw, ur = ((2 * ox_lo + 1) * 16) % ssw;
+        const int uq = 32 / ssw, urm = 32 % ssw;
+        for (int ox = ox_lo; ox <= ox_hi; ox++) {
+            const int tu = flipx ? 31 - u : u;
+            const uint8_t pen = rowb[tu];
+            const int bx = x0 + ox - dst->ox;
+            u += uq; ur += urm; if (ur >= ssw) { ur -= ssw; u++; }
             if (pen == 0xFF) continue;             /* transparent */
-            int idx = (pal_base + pen) & 0x7FFF;
-            uint8_t rgb[3] = { pal[idx], pal[0x8000 + idx], pal[0x10000 + idx] };
-            if (c->fogfactor)  blend3(rgb, c->fog_rgb,  0xFF - c->fogfactor);
-            if (c->fadefactor) blend3(rgb, c->fade_rgb, 0xFF - c->fadefactor);
+            uint8_t rgb[3];
+            if (c->lut) { rgb[0] = c->lut[pen][0]; rgb[1] = c->lut[pen][1]; rgb[2] = c->lut[pen][2]; }
+            else {
+                int idx = (pal_base + pen) & 0x7FFF;
+                rgb[0] = pal[idx]; rgb[1] = pal[0x8000 + idx]; rgb[2] = pal[0x10000 + idx];
+                if (c->fogfactor)  blend3(rgb, c->fog_rgb,  0xFF - c->fogfactor);
+                if (c->fadefactor) blend3(rgb, c->fade_rgb, 0xFF - c->fadefactor);
+            }
             int o = (by * dst->w + bx) * 4;
             uint8_t *rgba = dst->rgba;
             int out_a = 255;
@@ -312,6 +328,7 @@ static void decode_sprite(const sprite_state *st, const fog_state *fog,
     d->c.alpha_pen = fog->poly_alpha_pen;
     d->c.prioverchar = (cz == 0xFE) ? 1 : 0;
     d->c.fog_rgb = fog_rgb; d->c.fade_rgb = fade_rgb;
+    d->c.lut = NULL;
     d->pal_base = 256 * (color & 0x7F);
     #undef WQ
 }
@@ -384,6 +401,19 @@ void sprite_render_item(const sprite_state *st, const fog_state *fog,
     spr_decoded d;
     decode_sprite(st, fog, it->idx, &d, fr, fa);
     d.c.compose_alpha = compose_alpha;
+    /* the 256 pens' colours once for the sprite -- palette, then fog, then fade, as draw_tile_dst blends each pixel -- when
+     * the sprite has more pixels than that */
+    static uint8_t lut[256][3];
+    if ((long)it->w * it->h > 256) {
+        for (int p = 0; p < 256; p++) {
+            const int idx = (d.pal_base + p) & 0x7FFF;
+            uint8_t rgb[3] = { st->pal[idx], st->pal[0x8000 + idx], st->pal[0x10000 + idx] };
+            if (d.c.fogfactor)  blend3(rgb, d.c.fog_rgb,  0xFF - d.c.fogfactor);
+            if (d.c.fadefactor) blend3(rgb, d.c.fade_rgb, 0xFF - d.c.fadefactor);
+            lut[p][0] = rgb[0]; lut[p][1] = rgb[1]; lut[p][2] = rgb[2];
+        }
+        d.c.lut = (const uint8_t (*)[3])lut;
+    }
     tile_dst dst = { rgba, NULL, it->x0, it->y0, it->w, it->h };
     const uint32_t *w = st->spr;
     int offset = 0;
@@ -480,6 +510,7 @@ void sprite_render_ex(const sprite_state *st, const fog_state *fog,
 
         int clip = (src[2] >> 23) & 0xE;
         tile_ctx c;
+        c.lut = NULL;                                      /* the full-canvas path blends each pixel */
         c.cxn = -deltax + s16(W(0x80 + clip) >> 16);
         c.cxx = -deltax + s16(W(0x80 + clip) & 0xFFFF);
         c.cyn = -deltay + s16(W(0x80 + (1 | clip)) >> 16);
@@ -536,22 +567,29 @@ int sprite_load_regs(sprite_state *st, const uint8_t *spriteram, size_t spritera
     if (spriteram_size > SPR_RAM_MAX) spriteram_size = SPR_RAM_MAX;
     if (vics_size > SPR_VICS_MAX) vics_size = SPR_VICS_MAX;
     const uint8_t *b = spriteram;
-    if (getenv("PROPCYCL_SPRLD")) { static int n;
+    static int sprld = -1;
+    if (sprld < 0) sprld = getenv("PROPCYCL_SPRLD") != NULL;
+    if (sprld) { static int n;
         if (n++ % 120 == 0)
             printf("    [SPRLD] hdr %02x%02x%02x%02x %02x%02x%02x%02x clip %02x%02x%02x%02x\n",
                    b[0],b[1],b[2],b[3],b[4],b[5],b[6],b[7],
                    b[0x200],b[0x201],b[0x202],b[0x203]); }
     int n = (int)(spriteram_size / 4);
+    int vn = (int)(vics_size / 4);
+#if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
+    /* a big-endian host (the Wii) holds the words as they are: the byte-by-byte build of 200 KB a frame was ~4% of its time */
+    memcpy(live_spr, b, (size_t)n * 4);
+    memcpy(live_vicsd, vics_data, (size_t)vn * 4);
+#else
     for (int i = 0; i < n; i++)
         live_spr[i] = ((uint32_t)b[i*4] << 24) | ((uint32_t)b[i*4+1] << 16) |
                       ((uint32_t)b[i*4+2] << 8) | b[i*4+3];
-    st->spr = live_spr; st->spr_n = n;
-
     b = vics_data;
-    int vn = (int)(vics_size / 4);
     for (int i = 0; i < vn; i++)
         live_vicsd[i] = ((uint32_t)b[i*4] << 24) | ((uint32_t)b[i*4+1] << 16) |
                         ((uint32_t)b[i*4+2] << 8) | b[i*4+3];
+#endif
+    st->spr = live_spr; st->spr_n = n;
     st->vicsd = live_vicsd; st->vicsd_n = vn;
 
     for (int i = 0; i < 0x20; i++) st->vicsc[i] = vics_ctl[i];

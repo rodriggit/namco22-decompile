@@ -21,25 +21,61 @@ uint32_t rr_read(uint32_t a, int size);
 void     rr_write(uint32_t a, int size, uint32_t v);
 
 #define RR_REGSPACE 0x800
-extern uint8_t R[RR_REGSPACE];
+extern uint8_t R[RR_REGSPACE] __attribute__((aligned(8)));
 extern int32_t rr_budget;
 
+#if defined(__WII__) && defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
+/* THE WII: a big-endian host holds R[] the 68K's way already, so a register is one 2- or 4-byte load or store. Forced inline:
+ * the lifted files build at -Os, where the byte-by-byte forms below were not inlined and every register access was a call
+ * (RG4 and RS4 showed in Dolphin's block profile as functions of their own). R[] is 8-aligned and the offsets are constants,
+ * so gcc knows a whole register's alignment; a sub-register (D0w at +2, D0b at +3) is a plain halfword or byte access. */
+#define RR_BE_HOST 1
+typedef uint16_t rr_u16u __attribute__((aligned(1), may_alias));
+typedef uint32_t rr_u32u __attribute__((aligned(1), may_alias));
+#define RR_INL static inline __attribute__((always_inline))
+RR_INL uint64_t RG1(uint32_t o) { return R[o]; }
+RR_INL uint64_t RG2(uint32_t o) { return *(const rr_u16u *)(const void *)(R + o); }
+RR_INL uint64_t RG4(uint32_t o) { return *(const rr_u32u *)(const void *)(R + o); }
+RR_INL void RS1(uint32_t o, uint64_t v) { R[o] = (uint8_t)v; }
+RR_INL void RS2(uint32_t o, uint64_t v) { *(rr_u16u *)(void *)(R + o) = (uint16_t)v; }
+RR_INL void RS4(uint32_t o, uint64_t v) { *(rr_u32u *)(void *)(R + o) = (uint32_t)v; }
+#else
 static inline uint64_t RG1(uint32_t o) { return R[o]; }
 static inline uint64_t RG2(uint32_t o) { return (uint64_t)R[o] << 8 | R[o + 1]; }
 static inline uint64_t RG4(uint32_t o) { return (uint64_t)R[o] << 24 | (uint64_t)R[o + 1] << 16 | (uint64_t)R[o + 2] << 8 | R[o + 3]; }
-static inline uint64_t RG8(uint32_t o) { return RG4(o) << 32 | RG4(o + 4); }
 static inline void RS1(uint32_t o, uint64_t v) { R[o] = (uint8_t)v; }
 static inline void RS2(uint32_t o, uint64_t v) { R[o] = (uint8_t)(v >> 8); R[o + 1] = (uint8_t)v; }
 static inline void RS4(uint32_t o, uint64_t v) { R[o] = (uint8_t)(v >> 24); R[o + 1] = (uint8_t)(v >> 16); R[o + 2] = (uint8_t)(v >> 8); R[o + 3] = (uint8_t)v; }
+#endif
+static inline uint64_t RG8(uint32_t o) { return RG4(o) << 32 | RG4(o + 4); }
 static inline void RS8(uint32_t o, uint64_t v) { RS4(o, v >> 32); RS4(o + 4, v); }
 /* 80-bit extended-precision registers: 68881 opcodes Ghidra reads out of DATA regions (a 68EC020 has no FPU and the traces never execute them);
  * kept as their low 64 bits so the file compiles, not as floating point. */
 static inline uint64_t RG10(uint32_t o) { return RG8(o + 2); }
 static inline void RS10(uint32_t o, uint64_t v) { R[o] = 0; R[o + 1] = 0; RS8(o + 2, v); }
 
+#ifdef RR_BE_HOST
+/* the two regions the game reads all the time, read in place: the program ROM and the work RAM (engine/ss22_board.c sets
+ * them; a board without them leaves them NULL). Exactly rr_read's result there -- a 24-bit address, no device behind it,
+ * no wrap past 0xFFFFFF -- and anything else still goes through rr_read. rr_read was ~6% of the Wii's time. */
+extern const uint8_t *rr_fast_rom, *rr_fast_wram;
+extern const uint32_t rr_fast_rom_size, rr_fast_wram_base, rr_fast_wram_size;
+RR_INL const uint8_t *rr_fast_at(uint32_t a, uint32_t size)
+{
+    a &= 0xFFFFFFu;
+    if (a + size <= rr_fast_rom_size) return rr_fast_rom ? rr_fast_rom + a : 0;
+    const uint32_t w = a - rr_fast_wram_base;
+    if (w + size <= rr_fast_wram_size && w < rr_fast_wram_size) return rr_fast_wram ? rr_fast_wram + w : 0;
+    return 0;
+}
+RR_INL uint32_t MRD1(uint32_t a) { const uint8_t *p = rr_fast_at(a, 1); return p ? *p : rr_read(a, 1); }
+RR_INL uint32_t MRD2(uint32_t a) { const uint8_t *p = rr_fast_at(a, 2); return p ? *(const rr_u16u *)(const void *)p : rr_read(a, 2); }
+RR_INL uint32_t MRD4(uint32_t a) { const uint8_t *p = rr_fast_at(a, 4); return p ? *(const rr_u32u *)(const void *)p : rr_read(a, 4); }
+#else
 static inline uint32_t MRD1(uint32_t a) { return rr_read(a, 1); }
 static inline uint32_t MRD2(uint32_t a) { return rr_read(a, 2); }
 static inline uint32_t MRD4(uint32_t a) { return rr_read(a, 4); }
+#endif
 static inline uint64_t MRD8(uint32_t a) { return (uint64_t)rr_read(a, 4) << 32 | rr_read(a + 4, 4); }
 static inline void MWR1(uint32_t a, uint64_t v) { rr_write(a, 1, (uint32_t)v); }
 static inline void MWR2(uint32_t a, uint64_t v) { rr_write(a, 2, (uint32_t)v); }

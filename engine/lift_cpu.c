@@ -16,7 +16,7 @@
 #include "lift_rt.h"
 #include "lift_cpu.h"
 
-uint8_t R[RR_REGSPACE];
+uint8_t R[RR_REGSPACE] __attribute__((aligned(8)));   /* aligned: a big-endian host loads a whole register at once (lift_rt.h) */
 int32_t rr_budget;
 uint32_t rr_frame, rr_n_traps;
 int rr_in_irq;
