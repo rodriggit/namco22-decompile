@@ -80,20 +80,17 @@ static gq      *qbuf;
 static gq_key  *qkeys;
 static int      qn, qcap, qorder;
 
+/* A fixed capacity, allocated once at start-up (gx_init_once): it once grew with realloc, which failed silently with MEM2 full
+ * and dropped every quad of every frame (a frame with geometry time and 0 quads). The most seen in a frame is ~1600; each
+ * slot is ~210 bytes, so the room left over goes to the texture cache. */
+#define QMAX 2560
+static int st_qdropped;                      /* quads past QMAX (statistics) */
+
 static void push_quad(const geo_quad *q, void *user)
 {
     (void)user;
     if (q->nrv < 3) return;
-    if (qn == qcap) {
-        const int nc = qcap ? qcap * 2 : 2048;
-        gq *nb = realloc(qbuf, (size_t)nc * sizeof *nb);
-        if (!nb) return;
-        qbuf = nb;
-        gq_key *nk = realloc(qkeys, (size_t)nc * sizeof *nk);
-        if (!nk) return;
-        qkeys = nk;
-        qcap = nc;
-    }
+    if (qn >= qcap) { st_qdropped++; return; }
     gq *d = &qbuf[qn];
     d->nrv = q->nrv > 10 ? 10 : q->nrv;
     for (int i = 0; i < d->nrv; i++) {
@@ -494,6 +491,11 @@ static bool      txt_visible;
 static uint32_t  txt_global;                 /* everything a text pixel reads that is not its own tile */
 static bool      txt_have;
 static int       txt_renders, txt_cells;     /* full redraws, and cells redrawn alone */
+static uint32_t  txt_part[5];                /* last frame's global inputs: palette, scroll, mixer registers, spot, fade */
+static fog_state txt_fog;                    /* g_fog as the layer is drawn with: no screen fade when the GPU applies it */
+static int       txt_fade_gpu, txt_fade_f;   /* the TEV applies the fade / its factor this frame (0 = none) */
+static uint8_t   txt_fade_rgb[3];
+static int       txt_why[5];                 /* full redraws each of them caused (statistics) */
 
 /* the layer kept between frames in 16x16 screen cells, each with the signature of the tiles it shows */
 #define TCW (SW / 16)
@@ -550,22 +552,41 @@ static bool convert_cell(int cx, int cy)
  * re-converted, which in a game is the few digits of the clock and the score. */
 static void text_update(void)
 {
+    /* the global inputs in five groups, hashed apart so the log can say which one forced a full redraw */
     const int palbase = (g_fog.text_palbase << 8) & 0x7F00;
-    uint32_t h = 2166136261u;
-    for (int plane = 0; plane < 3; plane++) h = hash_words(h, txt_pal + plane * 0x8000 + palbase, 256);
-    h = hash_words(h, tst.attr, sizeof tst.attr);
+    uint32_t part[5];
+    part[0] = 2166136261u;
+    for (int plane = 0; plane < 3; plane++) part[0] = hash_words(part[0], txt_pal + plane * 0x8000 + palbase, 256);
+    part[1] = hash_words(2166136261u, tst.attr, sizeof tst.attr);
     const uint8_t regs[8] = { g_fog.mixer_flags, g_fog.text_palbase, g_fog.text_alpha, g_fog.text_alpha_lo,
                               g_fog.text_alpha_hi, g_fog.text_alpha_mask, (uint8_t)txt_spot_on, 0 };
-    h = hash_words(h, regs, sizeof regs);
-    h = hash_words(h, &g_fog.spot_factor, sizeof g_fog.spot_factor);
-    if (txt_spot_on && txt_spot) h = hash_words(h, txt_spot, 0x1000);
+    part[2] = hash_words(2166136261u, regs, sizeof regs);
+    part[3] = hash_words(2166136261u, &g_fog.spot_factor, sizeof g_fog.spot_factor);
+    if (txt_spot_on && txt_spot) part[3] = hash_words(part[3], txt_spot, 0x1000);
     const int fade_en = ((g_fog.mixer_flags & 2) != 0) && g_fog.screen_fade_factor;   /* text_hw.c gates the fade the same way */
-    h = hash_words(h, &fade_en, sizeof fade_en);
-    if (fade_en) { h = hash_words(h, g_fog.screen_fade, 3); h = hash_words(h, &g_fog.screen_fade_factor, 1); }
+    /* THE FADE ON THE GPU: the screen fade moves every pixel of the layer towards one colour by one factor -- a transition
+     * steps it each frame, which redrew the whole layer each frame (58 of 59 full redraws in the attract). The layer is kept
+     * unfaded and the TEV applies the fade as it draws it (gx_text_layer). Not with the spot table on: its darkening pens
+     * are left unfaded by text_hw.c, which one TEV blend over the layer cannot tell apart. */
+    txt_fade_gpu = !txt_spot_on;
+    txt_fade_f = (txt_fade_gpu && fade_en) ? g_fog.screen_fade_factor : 0;
+    memcpy(txt_fade_rgb, g_fog.screen_fade, 3);
+    txt_fog = g_fog;
+    if (txt_fade_gpu) txt_fog.screen_fade_factor = 0;      /* text_hw.c draws no fade */
+    part[4] = hash_words(2166136261u, &txt_fade_gpu, sizeof txt_fade_gpu);
+    if (!txt_fade_gpu) {
+        part[4] = hash_words(part[4], &fade_en, sizeof fade_en);
+        if (fade_en) { part[4] = hash_words(part[4], g_fog.screen_fade, 3); part[4] = hash_words(part[4], &g_fog.screen_fade_factor, 1); }
+    }
+    uint32_t h = 2166136261u;
+    for (int i = 0; i < 5; i++) h = (h ^ part[i]) * 16777619u;
 
     const bool full = !txt_have || h != txt_global;
+    if (full && txt_have)
+        for (int i = 0; i < 5; i++) if (part[i] != txt_part[i]) txt_why[i]++;
+    memcpy(txt_part, part, sizeof part);
     if (full) {
-        text_render(&tst, &g_fog, txt_rgba, 0);
+        text_render(&tst, &txt_fog, txt_rgba, 0);
         txt_global = h; txt_have = true;
         txt_renders++;
     }
@@ -580,7 +601,7 @@ static void text_update(void)
             if (tb != ta) { k = k * 16777619u ^ tile_key(ca, tb); if (cb != ca) k = k * 16777619u ^ tile_key(cb, tb); }
             const int c = cy * TCW + cx;
             if (!full && k == cell_key[c]) continue;
-            if (!full) { text_render_rect(&tst, &g_fog, txt_rgba, cx * 16, cy * 16, 16, 16); txt_cells++; }
+            if (!full) { text_render_rect(&tst, &txt_fog, txt_rgba, cx * 16, cy * 16, 16, 16); txt_cells++; }
             cell_key[c] = k;
             const uint8_t vis = convert_cell(cx, cy);
             vis_cells += (int)vis - (int)cell_vis[c];
@@ -594,21 +615,38 @@ static void text_update(void)
 static bool ready, failed;
 static uint32_t frame_no;
 
+/* 32-aligned, never freed: MEM1's leftover if it fits, else the heap */
+static void *big_alloc(size_t size)
+{
+    void *p = wii_port_mem1_alloc(size, 32);
+    return p ? p : memalign(32, size);
+}
+
 static bool gx_init_once(void)
 {
     if (ready) return true;
     if (failed || !wii_port_gx_ready()) return false;   /* GX is set up by the host (wii_port_configure) */
+    /* The big, never-freed buffers first, from what MEM1 has left (wii_port_mem1_alloc: the heap leaves it behind once it
+     * moves to MEM2), the most needed first; whatever does not fit there comes from the heap. MEM2 keeps its room for the
+     * texture cache. */
+    const uint32_t free1_before = (uint32_t)((uintptr_t)SYS_GetArena1Hi() - (uintptr_t)SYS_GetArena1Lo());
+    qbuf = big_alloc((size_t)QMAX * sizeof *qbuf);
+    qkeys = big_alloc((size_t)QMAX * sizeof *qkeys);
+    qcap = (qbuf && qkeys) ? QMAX : 0;
+    txt_tex = big_alloc((size_t)SW * SH * 2);
+    spr_arenas[0] = big_alloc(SPR_ARENA);
+    spr_arenas[1] = big_alloc(SPR_ARENA);
+    txt_rgba = big_alloc((size_t)SW * SH * 4);
+    const uint32_t free1_after = (uint32_t)((uintptr_t)SYS_GetArena1Hi() - (uintptr_t)SYS_GetArena1Lo());
     tex_pool = calloc(TEX_ENTRIES, sizeof *tex_pool);
     tluts = memalign(32, sizeof(uint16_t) * ENG_PAL_GROUPS * ENG_PAL_ENTRIES);
     cgbuf = malloc(0x20000);
-    txt_rgba = malloc((size_t)SW * SH * 4);
-    txt_tex = memalign(32, (size_t)SW * SH * 2);
-    spr_arenas[0] = memalign(32, SPR_ARENA);
-    spr_arenas[1] = memalign(32, SPR_ARENA);
     spr_arena = spr_arenas[0];
     spr_keep_tab[0] = calloc(SPR_KEEP, sizeof(spr_keep));
     spr_keep_tab[1] = calloc(SPR_KEEP, sizeof(spr_keep));
-    if (!tex_pool || !tluts || !cgbuf || !txt_rgba || !txt_tex || !spr_arenas[0] || !spr_arenas[1] ||
+    wii_port_log("[WII-GX] %u KB of the renderer's buffers from MEM1's leftover (%u KB were free there)",
+                 (unsigned)((free1_before - free1_after) >> 10), (unsigned)(free1_before >> 10));
+    if (!qcap || !tex_pool || !tluts || !cgbuf || !txt_rgba || !txt_tex || !spr_arenas[0] || !spr_arenas[1] ||
         !spr_keep_tab[0] || !spr_keep_tab[1]) {
         wii_port_log("[WII-GX] cannot allocate the renderer's buffers");
         failed = true;
@@ -617,15 +655,21 @@ static bool gx_init_once(void)
     for (int i = 0; i < TEX_ENTRIES; i++) { tex_pool[i].hnext = tex_free_list; tex_free_list = &tex_pool[i]; }
     for (int s = 0; s < 16; s++) tmem_group[s] = -1;
 
-    /* the texture budget: what MEM2 has left after everything else, less a margin for the run, 512 KB .. 6 MB */
+    /* the texture budget: what both arenas have left after everything else, less a margin for the run, 512 KB .. 6 MB. The
+     * bakes come from the heap, which now (the ROM regions taken from the arenas directly, eng_alloc_big) grows in MEM1 first
+     * and then in MEM2 -- counting MEM2 alone left the cache 1.8 MB and whole models flickering out. */
     {
+        const uint32_t free1 = (uint32_t)((uintptr_t)SYS_GetArena1Hi() - (uintptr_t)SYS_GetArena1Lo());
         const uint32_t free2 = (uint32_t)((uintptr_t)SYS_GetArena2Hi() - (uintptr_t)SYS_GetArena2Lo());
+        const uint32_t freeh = (uint32_t)mallinfo().fordblks;   /* free inside the heap already (the boot's freed buffers) */
         const uint32_t margin = 1u << 20;
-        uint32_t b = free2 > margin ? free2 - margin : 0;
+        const uint32_t all = free1 + free2 + freeh;
+        uint32_t b = all > margin ? all - margin : 0;
         if (b > (6u << 20)) b = 6u << 20;
         if (b < (512u << 10)) b = 512u << 10;
         tex_budget = b;
-        wii_port_log("[WII-GX] renderer up: texture budget %u KB (MEM2 free %u KB)", (unsigned)(b >> 10), (unsigned)(free2 >> 10));
+        wii_port_log("[WII-GX] renderer up: texture budget %u KB (free: MEM1 %u KB, MEM2 %u KB, inside the heap %u KB)",
+                     (unsigned)(b >> 10), (unsigned)(free1 >> 10), (unsigned)(free2 >> 10), (unsigned)(freeh >> 10));
     }
 
     /* three vertex formats: 0 = textured quad (position, colour, texcoord), 1 = layer / sprite (position, texcoord), 2 = flat */
@@ -732,6 +776,23 @@ static void gx_picture(uint16_t *tex, int tw, int th, int x, int y, int w, int h
     GX_End();
 }
 
+/* The text layer, with the screen fade applied here when text_update left it out: text_hw.c's
+ * (c * (0xFF - f) + fade * f) / 0xFF is the TEV's lerp from the texel to C1 by the constant f, the alpha passed through. */
+static void gx_text_layer(void)
+{
+    if (!txt_fade_f) { gx_picture(txt_tex, SW, SH, 0, 0, SW, SH); return; }
+    gx_mode_tex2d();
+    GX_SetTevColor(GX_TEVREG1, (GXColor){ txt_fade_rgb[0], txt_fade_rgb[1], txt_fade_rgb[2], 255 });
+    GX_SetTevKColor(GX_KCOLOR0, (GXColor){ (u8)txt_fade_f, (u8)txt_fade_f, (u8)txt_fade_f, (u8)txt_fade_f });
+    GX_SetTevKColorSel(GX_TEVSTAGE0, GX_TEV_KCSEL_K0);
+    GX_SetTevColorIn(GX_TEVSTAGE0, GX_CC_TEXC, GX_CC_C1, GX_CC_KONST, GX_CC_ZERO);
+    GX_SetTevColorOp(GX_TEVSTAGE0, GX_TEV_ADD, GX_TB_ZERO, GX_CS_SCALE_1, GX_TRUE, GX_TEVPREV);
+    GX_SetTevAlphaIn(GX_TEVSTAGE0, GX_CA_ZERO, GX_CA_ZERO, GX_CA_ZERO, GX_CA_TEXA);
+    GX_SetTevAlphaOp(GX_TEVSTAGE0, GX_TEV_ADD, GX_TB_ZERO, GX_CS_SCALE_1, GX_TRUE, GX_TEVPREV);
+    gx_picture(txt_tex, SW, SH, 0, 0, SW, SH);
+    gx_mode = MODE_NONE;                                   /* the next 2D draw sets its plain REPLACE stage again */
+}
+
 /* the quads: eye-space vertices, two TEV stages (texel x shade x4, then the fog) */
 static GXColor quads_fog;
 
@@ -802,14 +863,16 @@ static void stats_frame(void)
     if (++frame_no % STAT_EVERY) return;
     const double k = 1.0 / (STAT_EVERY * 1000.0);
     wii_port_log("[WII-GX] frame %u: quads %d drawn %d sprites %d (%ld px new, %d reused) (per frame) | tex: %d baked %d hits %d lowres "
-                 "%d failed, %d cached, %u KB | tlut loads %d | text: %d full, %d cells | sprites dropped %d | ms prep %.1f "
+                 "%d failed, %d cached, %u KB | tlut loads %d | text: %d full (palette %d scroll %d mixer %d spot %d fade %d), %d cells "
+                 "| sprites dropped %d quads dropped %d | ms prep %.1f "
                  "(geometry %.1f) tex %.1f 2d %.1f (sprites %.1f text %.1f) gx %.1f | no-walk updates %d",
                  (unsigned)frame_no, st_quads / STAT_EVERY, st_drawn / STAT_EVERY, st_sprites / STAT_EVERY,
                  st_spr_px / STAT_EVERY, spr_hits / STAT_EVERY, tex_bakes, tex_hits, tex_lowres, tex_fails, tex_count, (unsigned)(tex_bytes >> 10),
-                 tlut_loads, txt_renders, txt_cells, spr_dropped, st_prep * k, st_walk * k, st_tex * k, (st_spr + st_txt) * k, st_spr * k,
+                 tlut_loads, txt_renders, txt_why[0], txt_why[1], txt_why[2], txt_why[3], txt_why[4], txt_cells, spr_dropped, st_qdropped, st_prep * k, st_walk * k, st_tex * k, (st_spr + st_txt) * k, st_spr * k,
                  st_txt * k, st_gx * k, st_nowalk);
     st_prep = st_walk = st_tex = st_spr = st_txt = st_gx = 0;
-    st_spr_px = 0; spr_hits = 0;
+    st_spr_px = 0; spr_hits = 0; st_qdropped = 0;
+    memset(txt_why, 0, sizeof txt_why);
     st_quads = st_drawn = st_sprites = st_nowalk = 0;
     tex_bakes = tex_hits = tex_lowres = tex_fails = tlut_loads = txt_renders = txt_cells = spr_dropped = 0;
 }
@@ -1003,7 +1066,7 @@ void ss22_draw(int vw, int vh)
                 (uint8_t)(((g_fog.screen_fade_factor + 1) * 255 + 128) / 256));
     }
     if (have_text && txt_visible) {
-        gx_picture(txt_tex, SW, SH, 0, 0, SW, SH);
+        gx_text_layer();
         for (int i = 0; i < ni; i++)                  /* the sprites over the text layer, over it again */
             if (items[i].prioverchar) draw_sprite(i);
     }

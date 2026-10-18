@@ -33,7 +33,7 @@ bool ss22_video_init(const char *dir)
 #else
     const size_t region = c->sprite_region;
 #endif
-    uint8_t *tiles = malloc(region);
+    uint8_t *tiles = eng_alloc_big(region, 0);
     if (!tiles) return false;
     memset(tiles, c->sprite_fill, region);
     for (int i = 0; i < c->n_scg; i++) {
@@ -42,7 +42,7 @@ bool ss22_video_init(const char *dir)
         if (!f || fread(tiles + i * chip, 1, chip, f) != chip) {
             fprintf(stderr, "[VIDEO] cannot read %s -- no sprites\n", p);
             if (f) fclose(f);
-            free(tiles);
+            eng_free_big(tiles);
             tiles = NULL;
             break;
         }

@@ -27,6 +27,7 @@
 #include "c352.h"
 #include "audio_out.h"
 #include "eng_cfg.h"
+#include "eng.h"                          /* eng_alloc_big */
 
 /* how the sound program's instructions get executed: gen/ss22_snd_driver.c (the translation) in the game,
  * tools/sndoracle/sound_oracle.c (fetch/decode) in dd_oracle */
@@ -306,8 +307,8 @@ bool ss22_snd_init(const char *dir)
             if (c->wave_off[i] + sz[i] > c->wave_size) sz[i] = c->wave_size > c->wave_off[i] ? c->wave_size - c->wave_off[i] : 0;
             total += sz[i];
         }
-        rom = calloc(1, 0x80000);
-        wave = total ? calloc(1, total) : NULL;
+        rom = eng_alloc_big(0x80000, 1);                 /* kept for the run: from the arenas, not the heap (eng.h) */
+        wave = total ? eng_alloc_big(total, 1) : NULL;
         if (!rom || !wave || !slurp(dir, c->rom, rom, 0x80000)) return false;
         chip_ok = true;
         for (int i = 0; chip_ok && i < 2; i++) {
