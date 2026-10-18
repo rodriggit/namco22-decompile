@@ -135,7 +135,9 @@ The **Wii Remote is the gun**: aim with the IR pointer and shoot with the **B** 
 | **Nunchuk Z**, **1** or the GameCube controller's **B** | The foot pedal: step out of cover to attack; let go to take cover |
 | **+** | Put in a coin (a game costs three) |
 | **−** | Service |
-| **Home** | Test mode (the operator's menu) |
+| **2** | Test mode (the operator's menu) |
+| **Home** | Leave the game: back to the Homebrew Channel (the settings are saved first) |
+| Power (console or Wii Remote) | Save the settings and power off. Dolphin stops the game this way too |
 
 **To reload**, aim **off the screen** and shoot, as on the arcade.
 

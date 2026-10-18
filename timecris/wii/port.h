@@ -17,10 +17,11 @@ typedef struct wii_platform_input {
     /*
      * Wii-native control layout:
      *  - trigger  -> Wiimote B button (mandatory)
-     *  - coin     -> Wiimote + (or Home if using a one-button scheme)
+     *  - coin     -> Wiimote +
      *  - service  -> Wiimote -
-     *  - test     -> Wiimote Home
+     *  - test     -> Wiimote 2
      *  - pedal    -> Nunchuk Z or Wiimote 1
+     *  - Home leaves the game (wii_port_quit_requested), it is not a cabinet input
      *  - offscreen -> pointer invalid / IR not detected
      *
      * The game receives normalized trigger/aim state and does not care which
@@ -93,6 +94,7 @@ bool wii_port_is_ready(void);
 void wii_port_configure(const wii_platform_config *config);
 void wii_port_setup_audio(const wii_platform_audio *audio);
 void wii_port_poll_input(wii_platform_input *input);
+bool wii_port_quit_requested(void);     /* the player pressed Home: leave (the host returns false, the engine saves and exits) */
 void wii_port_rumble(bool on);          /* the Wiimote's motor: on or off, it has no strength */
 /* The range gun_x / gun_y span (the WPAD virtual resolution set at configure time). */
 void wii_port_ir_size(uint32_t *w, uint32_t *h);

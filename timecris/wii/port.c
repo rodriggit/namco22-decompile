@@ -308,6 +308,17 @@ static void wii_port_clear_xfb_black(void)
 }
 #endif
 
+/* LEAVING. Home asks to go back to the loader; the console's power button, and a Wiimote's, to power off. Either way the host
+ * returns false (engine/ss22_host.c) and the engine leaves in order: the settings saved, everything closed, then exit(0) or,
+ * for a power button, wii_port_shutdown powers off. Dolphin stops a Wii title the same way -- it presses the power button and
+ * waits -- so without these, closing its window hung on "Shutting down". The callbacks run in an interrupt: only flags. */
+static volatile bool wii_quit, wii_power_off;
+bool wii_port_quit_requested(void) { return wii_quit; }
+#ifdef __WII__
+static void wii_on_power(void) { wii_power_off = true; wii_quit = true; }
+static void wii_on_wpad_power(s32 chan) { (void)chan; wii_on_power(); }
+#endif
+
 void wii_port_init(void)
 {
 #ifdef __WII__
@@ -324,6 +335,8 @@ void wii_port_init(void)
     }
     WPAD_Init();
     PAD_Init();
+    SYS_SetPowerCallback(wii_on_power);
+    WPAD_SetPowerButtonCallback(wii_on_wpad_power);
     WPAD_SetVRes(0, 640, 480);
     wii_port_width = 640;
     wii_port_height = 480;
@@ -385,6 +398,7 @@ void wii_port_shutdown(void)
     WPAD_Shutdown();
     wii_port_ready = false;
     printf("[WII] platform shutdown\n");
+    if (wii_power_off) SYS_ResetSystem(SYS_POWEROFF, 0, 0);   /* a power button: off, rather than back to the loader */
 #else
     (void)0;
 #endif
@@ -530,7 +544,8 @@ void wii_port_poll_input(wii_platform_input *input)
     /* Practical defaults for the remaining controls. */
     input->coin = (wpad_buttons & WPAD_BUTTON_PLUS) != 0;
     input->service = (wpad_buttons & WPAD_BUTTON_MINUS) != 0;
-    input->test = (wpad_buttons & WPAD_BUTTON_HOME) != 0;
+    input->test = (wpad_buttons & WPAD_BUTTON_2) != 0;
+    if (wpad_buttons & WPAD_BUTTON_HOME) wii_quit = true;   /* Home: back to the loader (engine/ss22_host.c), as homebrew does */
     input->pedal = (wpad_buttons & (WPAD_BUTTON_1 | WPAD_NUNCHUK_BUTTON_Z)) != 0 || (pad_buttons & PAD_BUTTON_B) != 0;
 
     WPADData *wd = WPAD_Data(pad_chan);

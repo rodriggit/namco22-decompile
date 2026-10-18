@@ -137,6 +137,11 @@ bool ss22_host_frame(void)
 
     /* ss22_run.c leaves the cabinet's inputs to the host while one is active: read the Wiimote and tell the MCU, once per frame. */
     if (game && game->input_update) game->input_update();
+    if (wii_port_quit_requested()) {         /* Home or a power button: false makes ss22_run.c save the EEPROM, close everything and
+                                              * exit(0) -- back to the Homebrew Channel -- or power off (timecris/wii/port.c) */
+        wii_port_log("[WII-HOST] leaving (Home or a power button)");
+        return false;
+    }
     ss22_draw(640, 480);
     const uint64_t t1 = wii_port_usec();
     wii_port_gx_present();
