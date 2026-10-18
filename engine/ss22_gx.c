@@ -192,6 +192,7 @@ static void cmode_params(int cmode, int *offset, int *shift, int *mask)
 }
 
 static int tex_bakes, tex_hits, tex_fails, tex_lowres;
+static int tex_fail_budget, tex_fail_mem, tex_fail_slots;   /* why a bake at one cap did not fit: the budget, the heap, the entries */
 
 /* The CI8 texture of one (widened) UV box at one cap: cached, or baked now. NULL = it does not fit this frame. */
 static gx_tex *tex_get(int min_u, int min_v, int range_u, int range_v, int texbank, int cmode, int cap, uint32_t frame)
@@ -217,10 +218,10 @@ static gx_tex *tex_get(int min_u, int min_v, int range_u, int range_v, int texba
     const uint32_t bytes = (uint32_t)tw * (uint32_t)th;
 
     while (tex_bytes + bytes > tex_budget || !tex_free_list)
-        if (!tex_evict_one(frame)) return NULL;
+        if (!tex_evict_one(frame)) { if (!tex_free_list) tex_fail_slots++; else tex_fail_budget++; return NULL; }
     uint8_t *data;
     while (!(data = memalign(32, bytes)))
-        if (!tex_evict_one(frame)) return NULL;
+        if (!tex_evict_one(frame)) { tex_fail_mem++; return NULL; }
 
     memset(data, 0, bytes);
     int cm_offset, cm_shift, cm_mask;
@@ -420,7 +421,7 @@ static uint8_t     *spr_arena;
 static uint32_t     spr_arena_used;
 static uint8_t     *spr_scratch;             /* one sprite's RGBA, grown to the largest seen */
 static size_t       spr_scratch_cap;
-static int          spr_dropped;
+static int          spr_dropped, spr_dropped_mem;   /* all, and those for want of heap for the scratch (the rest: the arena) */
 static long         st_spr_px;               /* sprite bounding-box pixels rendered (statistics) */
 
 static spr_keep *keep_slot(spr_keep *tab, uint64_t key)
@@ -430,7 +431,7 @@ static spr_keep *keep_slot(spr_keep *tab, uint64_t key)
     return &tab[s];
 }
 
-static void sprites_render(void)
+static void sprites_render(uint32_t frame)
 {
     spr_cur ^= 1;
     spr_arena = spr_arenas[spr_cur];
@@ -463,8 +464,12 @@ static void sprites_render(void)
         } else {
             const size_t need = (size_t)it->w * it->h * 4;
             if (need > spr_scratch_cap) {
-                uint8_t *nb = realloc(spr_scratch, need);
-                if (!nb) { spr_dropped++; continue; }
+                /* the heap is the texture cache's too: once a cut-scene had filled it, the menu's larger sprites found no
+                 * room here and were dropped. Make room from the textures this frame does not draw, oldest first. */
+                uint8_t *nb;
+                while (!(nb = realloc(spr_scratch, need)))
+                    if (!tex_evict_one(frame)) break;
+                if (!nb) { spr_dropped++; spr_dropped_mem++; continue; }
                 spr_scratch = nb; spr_scratch_cap = need;
             }
             sprite_render_item(&sst, &g_fog, it, spr_scratch, 1);
@@ -893,18 +898,21 @@ static void stats_frame(void)
     if (++frame_no % STAT_EVERY) return;
     const double k = 1.0 / (STAT_EVERY * 1000.0);
     wii_port_log("[WII-GX] frame %u: quads %d drawn %d sprites %d (%ld px new, %d reused) (per frame) | tex: %d baked %d hits %d lowres "
-                 "%d failed, %d cached, %u KB | tlut loads %d | text: %d full (palette %d scroll %d mixer %d spot %d fade %d), %d cells "
-                 "| sprites dropped %d quads dropped %d | ms prep %.1f "
+                 "%d failed (a bake that did not fit: %d over the budget, %d no heap, %d no entry), %d cached, %u of %u KB, heap %u KB free "
+                 "| tlut loads %d | text: %d full (palette %d scroll %d mixer %d spot %d fade %d), %d cells "
+                 "| sprites dropped %d (%d no heap) quads dropped %d | ms prep %.1f "
                  "(geometry %.1f) tex %.1f 2d %.1f (sprites %.1f text %.1f) gx %.1f | no-walk updates %d",
                  (unsigned)frame_no, st_quads / STAT_EVERY, st_drawn / STAT_EVERY, st_sprites / STAT_EVERY,
-                 st_spr_px / STAT_EVERY, spr_hits / STAT_EVERY, tex_bakes, tex_hits, tex_lowres, tex_fails, tex_count, (unsigned)(tex_bytes >> 10),
-                 tlut_loads, txt_renders, txt_why[0], txt_why[1], txt_why[2], txt_why[3], txt_why[4], txt_cells, spr_dropped, st_qdropped, st_prep * k, st_walk * k, st_tex * k, (st_spr + st_txt) * k, st_spr * k,
+                 st_spr_px / STAT_EVERY, spr_hits / STAT_EVERY, tex_bakes, tex_hits, tex_lowres, tex_fails, tex_fail_budget, tex_fail_mem,
+                 tex_fail_slots, tex_count, (unsigned)(tex_bytes >> 10), (unsigned)(tex_budget >> 10), (unsigned)(mallinfo().fordblks >> 10),
+                 tlut_loads, txt_renders, txt_why[0], txt_why[1], txt_why[2], txt_why[3], txt_why[4], txt_cells, spr_dropped, spr_dropped_mem, st_qdropped, st_prep * k, st_walk * k, st_tex * k, (st_spr + st_txt) * k, st_spr * k,
                  st_txt * k, st_gx * k, st_nowalk);
     st_prep = st_walk = st_tex = st_spr = st_txt = st_gx = 0;
     st_spr_px = 0; spr_hits = 0; st_qdropped = 0;
     memset(txt_why, 0, sizeof txt_why);
     st_quads = st_drawn = st_sprites = st_nowalk = 0;
     tex_bakes = tex_hits = tex_lowres = tex_fails = tlut_loads = txt_renders = txt_cells = spr_dropped = 0;
+    tex_fail_budget = tex_fail_mem = tex_fail_slots = 0; spr_dropped_mem = 0;
 }
 
 /* ------------------------------------------------------------------ the interface */
@@ -1050,7 +1058,7 @@ void ss22_draw(int vw, int vh)
     st_tex += t1 - t0;
 
     /* 2. the 2D: each sprite into its own small texture, the text layer only when it changed */
-    if (have_spr) sprites_render();
+    if (have_spr) sprites_render(frame);
     t0 = wii_port_usec();
     st_spr += t0 - t1;
     if (have_text) text_update();

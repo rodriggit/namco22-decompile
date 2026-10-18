@@ -185,7 +185,9 @@ The ROM regions (textures, sprites, point data, sound: about 43 MB) are taken st
 the rest of MEM1 unused, so with the regions in it, how much memory the renderer had left depended on the program's size.
 The renderer takes its own large buffers from what MEM1 has left, and the texture cache gets what remains (up to 6 MB).
 If the cache is too small, textures are dropped and whole models flicker: the `tex:` part of `[WII-GX]` shows it
-(`failed`).
+(`failed`, and why). The cache shares the heap with the rest of the renderer, so when something else finds no room (a
+sprite's scratch buffer: after the attract demo had filled the cache, the menu's options went missing) it gives up the
+textures the frame does not draw.
 
 **Speed.** The Wii's CPU still runs the whole arcade board: the 68020's translated program, the master DSP's translated
 program, the sound CPU and the C352 sound chip, plus the geometry stage that turns the DSP's display list into screen
