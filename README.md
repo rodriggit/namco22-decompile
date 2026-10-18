@@ -13,7 +13,7 @@ native PowerPC program built with devkitPro.
 > | 2D graphics (text, sprites, HUD) | ✅ Drawn on the GPU, merged with the 3D by depth |
 > | Controls (Wii Remote) | ✅ Work |
 > | Sound | ⚠️ Plays (music, effects, voices), with gaps while the game runs below full speed |
-> | Speed | ⚠️ About 25–40 fps (the arcade runs at 60) |
+> | Speed | ⚠️ In gameplay the game runs at about 36–40 fps and shows 18–20 frames a second (the arcade runs at 60) |
 >
 > Tested only in the **Dolphin** emulator. Not yet tried on a real Wii.
 
@@ -190,10 +190,23 @@ polygons. Every 120 frames the game writes where the time went into `wii_boot.lo
 | `[WII-EMU]` | Inside `emu`: the DSP, and the sound (the C352's share in brackets). The 68K is what is left |
 | `[WII-GX]` | Inside the renderer: polygons, textures, sprites, text, and `prep` (the geometry stage, inside `emu`) |
 
-In gameplay a frame takes about 35–40 ms: geometry 7–9 ms, DSP 6–10 ms, sound 7–9 ms (the C352 about 3–4), 68K about 3 ms
-and drawing 5–8 ms. On the Wii the 68K reads its registers and its ROM and work RAM in place (one load each, instead of a
-byte at a time through a call), and the geometry projects with 32-bit integer divides (the PC build's 128-bit integers do
-not exist on a 32-bit CPU, where they fell back to software floating point).
+**Frameskip.** The board runs every frame, but while the game is behind the arcade's clock (59.906 Hz) one frame in two
+at most is neither prepared nor drawn: no geometry stage, no draw, no wait for the screen. In gameplay that takes the game
+from about 28 fps (and 28 on screen) to about 36–40 fps, with 18–20 on screen. When the game keeps up, every frame is
+drawn. The Wii Remote is read on every frame, drawn or not.
+
+In gameplay an emulated frame takes about 25–28 ms: DSP 7.5–8 ms, sound 6–8 ms (the C352 3–4), 68K about 3 ms, and on the
+frames that are drawn geometry about 6.7 ms and drawing about 4 ms. What each part does on the Wii to get there:
+
+- **68K**: it reads its registers and its ROM and work RAM in place (one load each, instead of a byte at a time through a
+  call).
+- **Master DSP**: when no interrupt can be taken, `c71_run` retires an instruction itself and calls the translation of
+  its 256-address page straight, through a table the translator emits (`tc_c25_exec_pages`).
+- **Sound CPU**: the timers and the A-D converter are brought up to date only when their next event is due, not before
+  every instruction.
+- **Geometry**: the vertex transform runs in 32-bit arithmetic (each coordinate split in two, with the same result as the
+  64-bit sum when the values are in range, and the 64-bit code when not), and the projection uses 32-bit integer divides.
+  The PC build's 128-bit integers do not exist on a 32-bit CPU, where they fell back to software floating point.
 
 **Profiling in Dolphin.** With *Show Debugging UI* on, *JIT → Enable JIT block profiling* (on before the game starts) and
 *JIT → Write JIT block log dump* (with the game running, after playing a while) write

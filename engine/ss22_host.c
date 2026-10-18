@@ -101,12 +101,37 @@ bool ss22_host_pointer(float *nx, float *ny, bool *inside)
     return true;
 }
 
+/* where a frame's time goes, into the boot log every 120 emulated frames: the emulation between two host frames (68K, DSP,
+ * sound MCU, the display-list walk), the draw (engine/ss22_gx.c) and the present (EFB copy, GPU finish, wait for vsync) */
+static uint64_t last_end, acc_emu, acc_draw, acc_present;
+static unsigned frames, frames_shown;
+static void frame_stats(void);
+
+/* FRAMESKIP. The board runs every frame; while the game is behind the arcade's clock (59.906 Hz) a frame's picture is
+ * neither prepared nor drawn -- at most FRAMESKIP_MAX frames in a row -- which saves the geometry stage, the draw and the
+ * wait for the screen. The lag that counts is capped at 3 frames, so a long slow stretch is not paid back afterwards by
+ * running faster than the arcade. 1 measured best in gameplay: about 36-39 fps of game and 18-20 on screen, against about
+ * 28 of both without (2 shows too few frames for what it gains). */
+#define FRAME_US      16693u
+#define FRAMESKIP_MAX 1
+bool ss22_host_skip_frame(void)
+{
+    static uint64_t due;                     /* when the frame ending now is due, at the arcade's speed */
+    static int run;
+    const uint64_t now = wii_port_usec();
+    due = due ? due + FRAME_US : now;
+    if (due + 3u * FRAME_US < now) due = now - 3u * FRAME_US;
+    if (now <= due || run >= FRAMESKIP_MAX) { run = 0; return false; }
+    run++;
+    if (last_end) acc_emu += now - last_end;
+    if (game && game->input_update) game->input_update();   /* the Wiimote is read every frame, drawn or not */
+    last_end = wii_port_usec();
+    frame_stats();
+    return true;
+}
+
 bool ss22_host_frame(void)
 {
-    /* where a frame's time goes, into the boot log every 120 frames: the emulation between two host frames (68K, DSP, sound
-     * MCU, the display-list walk), the draw (engine/ss22_gx.c) and the present (EFB copy, GPU finish, wait for vsync) */
-    static uint64_t last_end, acc_emu, acc_draw, acc_present;
-    static unsigned frames;
     const uint64_t t0 = wii_port_usec();
     if (last_end) acc_emu += t0 - last_end;
 
@@ -118,7 +143,13 @@ bool ss22_host_frame(void)
     last_end = wii_port_usec();
     acc_draw += t1 - t0;
     acc_present += last_end - t1;
+    frames_shown++;
+    frame_stats();
+    return true;
+}
 
+static void frame_stats(void)
+{
     if (++frames % 120u == 0u) {
         const double k = 1.0 / (120.0 * 1000.0);
         static uint32_t ur_seen, rs_seen, wr_seen, co_seen, cb_seen, bz_seen;
@@ -136,9 +167,11 @@ bool ss22_host_frame(void)
                      real_s > 0 ? (co - co_seen) * 1000.0 / hz / real_s : 0.0,
                      real_s > 0 ? (cb - cb_seen) / real_s : 0.0, real_s > 0 ? (bz - bz_seen) / real_s : 0.0);
         ur_seen = ur; rs_seen = rs; wr_seen = wr; co_seen = co; cb_seen = cb; bz_seen = bz;
+        wii_port_log("[WII-HOST] frameskip: %u of 120 frames shown (%.1f fps on screen)", frames_shown,
+                     real_s > 0 ? frames_shown / real_s : 0.0);
         acc_emu = acc_draw = acc_present = 0;
+        frames_shown = 0;
     }
-    return true;
 }
 
 void ss22_host_shot(const char *path)

@@ -154,6 +154,20 @@ static inline int32_t proj_fast(int32_t base16, int64_t v, int32_t mant, int shi
     return (int32_t)r;
 }
 #define PROJ(b, v, m, s, z, n) proj_fast((int32_t)(b), (v), (m), (s), (z), (n))
+
+/* One row of the vertex transform, (x*m0 + y*m1 + z*m2) >> 15 (floored), in 32-bit arithmetic: the int64 version is four
+ * multiplies and a carry chain per product on a 32-bit PowerPC, the hottest code of the geometry stage. With
+ * x = xh * 2^14 + xl (xl in 0..16383): A = sum xh*m and B = sum xl*m both fit in 32 bits for 24-bit coordinates and
+ * |m| <= XF_M_MAX (B: 3 * 16383 * 43690 + 2^14 < 2^31), and floor((A * 2^14 + B) / 2^15) = (A >> 1) + (((A & 1) << 14) + B) >> 15,
+ * since A * 2^14 = (A >> 1) * 2^15 + (A & 1) * 2^14. The same bits as the int64 sum; the caller checks the ranges. */
+#define XF_M_MAX 43690
+static inline int32_t xf_row(int32_t x, int32_t y, int32_t z, int32_t m0, int32_t m1, int32_t m2)
+{
+    const int32_t A = (x >> 14) * m0 + (y >> 14) * m1 + (z >> 14) * m2;
+    const int32_t B = (x & 0x3FFF) * m0 + (y & 0x3FFF) * m1 + (z & 0x3FFF) * m2;
+    return (A >> 1) + ((((A & 1) << 14) + B) >> 15);
+}
+static inline int xf_24bit(int32_t v) { return (uint32_t)v + 0x800000u < 0x1000000u; }
 #else
 #define PROJ(b, v, m, s, z, n) proj_sat((b), (v), (m), (s), (z), (n))
 #endif
@@ -246,10 +260,24 @@ static void quad_fixed(int32_t color, uint32_t addr, int32_t polyshift,
     const int32_t *t = g_view.t;
 
     int32_t vx[4], vy[4], vz[4];
+#if GEO_LEAN
+    int m_small = 1;
+    for (int r = 0; r < 3; r++)
+        for (int c = 0; c < 3; c++)
+            if (m[r][c] > XF_M_MAX || m[r][c] < -XF_M_MAX) m_small = 0;
+#endif
     for (int i = 0; i < 4; i++) {
         int32_t x = pt_read(0x8 + i * 3 + addr);
         int32_t y = pt_read(0x9 + i * 3 + addr);
         int32_t z = pt_read(0xa + i * 3 + addr);
+#if GEO_LEAN
+        if (m_small && xf_24bit(x) && xf_24bit(y) && xf_24bit(z)) {
+            vx[i] = xf_row(x, y, z, m[0][0], m[1][0], m[2][0]) + t[0];
+            vy[i] = xf_row(x, y, z, m[0][1], m[1][1], m[2][1]) + t[1];
+            vz[i] = xf_row(x, y, z, m[0][2], m[1][2], m[2][2]) + t[2];
+            continue;
+        }
+#endif
         vx[i] = (int32_t)(((int64_t)x * m[0][0] + (int64_t)y * m[1][0] +
                            (int64_t)z * m[2][0]) >> 15) + t[0];
         vy[i] = (int32_t)(((int64_t)x * m[0][1] + (int64_t)y * m[1][1] +

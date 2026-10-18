@@ -55,6 +55,8 @@ bool ss22_video_init(const char *dir)
     return g_eng_pointrom != NULL;
 }
 
+void ss22_video_skip(void) { (void)eng_frame_walks(from_capture || ss22_dsp_slave_active()); }
+
 void ss22_video_prepare(void)
 {
     ss22_regs r;

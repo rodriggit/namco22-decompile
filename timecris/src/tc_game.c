@@ -16,6 +16,7 @@
 #include "tc_lifted.h"
 
 bool tc_c25_exec(c71_t *d, int pc);          /* gen/tc_c25.c */
+extern bool (*const tc_c25_exec_pages[256])(c71_t *d, int pc);   /* gen/tc_c25.c: the same dispatch, by page */
 
 static const eng_rom_t k_roms[] = {
     {"ts2verb.1", 0x100000, "ts2ver-b.1"}, {"ts2verb.2", 0x100000, "ts2ver-b.2"}, {"ts2verb.3", 0x100000, "ts2ver-b.3"}, {"ts2verb.4", 0x100000, "ts2ver-b.4"},
@@ -218,7 +219,7 @@ static const ss22_game game = {
     .board = &tc_board,
     .dsp = { { {"ts1ptrl0.18k", "ts1ptrl1.16k", "ts1ptrl2.15k"},
                {"ts1ptrm0.18j", "ts1ptrm1.16j", "ts1ptrm2.15j"},
-               {"ts1ptru0.18f", "ts1ptru1.16f", "ts1ptru2.15f"} }, 3, tc_c25_exec },        /* three planes of three chips (Prop Cycle's shape); no LAC / BNEZ-self poll: none
+               {"ts1ptru0.18f", "ts1ptru1.16f", "ts1ptru2.15f"} }, 3, tc_c25_exec, 0, 0, tc_c25_exec_pages },        /* three planes of three chips (Prop Cycle's shape); no LAC / BNEZ-self poll: none
                                                                                                 * found in any loaded program (tried at 0x45DD and anywhere, never hit) */
     .snd = { "ts1data.8k", { "ts1wavea.2l", "ts1waveb.1l" }, { 0, 0x800000 }, 0x1000000, 0xFFFF, { 1, 2 }, { true, false } },   /* MAME's c352 region: ts1wavea.2l at 0 (ROM_LOAD16_WORD_SWAP), ts1waveb.1l at 0x800000 */
     .video = { { "ts1cg0.8d", "ts1cg1.10d", "ts1cg2.12d", "ts1cg3.13d", "ts1cg4.14d", "ts1cg5.16d", "ts1cg6.18d", NULL },

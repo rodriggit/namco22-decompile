@@ -100,6 +100,8 @@ typedef struct c71 {
     /* Executes the instruction at pc with its RPT repeats (pc already known to
      * be at an instruction boundary). Returns false on a fault (d->error). */
     bool (*xlat)(struct c71 *d, int pc);
+    /* The same translation by page (pc >> 8), 256 entries, or NULL: c71_run calls the page's function straight. */
+    bool (*const *xlat_pages)(struct c71 *d, int pc);
     const uint16_t *ops;              /* the translation's constant words while one executes */
 } c71_t;
 

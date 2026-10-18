@@ -38,6 +38,9 @@ bool ss22_host_restart_requested(void);                                      /* 
 bool ss22_host_active(void);                                                 /* a window is open (its keyboard drives the cabinet) */
 /* the mouse pointer in the 4:3 game picture, 0..1 each way (widescreen: the centred 4:3 part); inside = on that part. false = no window. */
 bool ss22_host_pointer(float *nx, float *ny, bool *inside);
+#if defined(__WII__) || defined(__wii__)
+bool ss22_host_skip_frame(void);                                              /* before the video is prepared: true = this frame is not drawn (frameskip) */
+#endif
 bool ss22_host_frame(void);                                                  /* once per emulated frame, after the video is prepared: events, draw, present, pace; false = quit */
 void ss22_host_shot(const char *path);                                       /* the prepared frame, 640x480, to a PPM (any GL context) */
 void ss22_host_close(void);

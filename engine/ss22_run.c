@@ -472,7 +472,13 @@ void rr_tick(void)
     { static int every = -1, ms, run = 1;                  /* ENG_SLOWFRAME=every:ms[:run] (tests: a slow machine): `run` frames of +ms, every `every` frames */
       if (every < 0) { const char *e = getenv("ENG_SLOWFRAME"); every = 0; if (e) sscanf(e, "%d:%d:%d", &every, &ms, &run); if (run < 1) run = 1; }
       if (every > 0 && ms > 0 && rr_frame % (uint32_t)every < (uint32_t)run) { struct timespec d = { ms / 1000, (long)(ms % 1000) * 1000000L }; nanosleep(&d, NULL); } }
-    if (video_on) {
+#if defined(__WII__) || defined(__wii__)
+    const bool skip_video = video_on && ss22_host_skip_frame();   /* frameskip: the board ran this frame, its picture is not drawn */
+    if (skip_video) ss22_video_skip();
+#else
+    const bool skip_video = false;
+#endif
+    if (video_on && !skip_video) {
         double t1 = ftime_on ? ft_now() : 0;
         ss22_video_prepare();                              /* the master's finished list, before this vblank starts the next */
         double t2 = ftime_on ? ft_now() : 0;

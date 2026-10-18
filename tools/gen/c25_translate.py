@@ -326,6 +326,11 @@ for hi in parts[0]: main += emit_chunk(hi)
 main += [f'bool {a.func}(c71_t *d, int pc)', '{', '    switch ((unsigned)pc >> 8) {']
 main += [f'    case 0x{hi:02X}: return {cname(hi)}(d, pc);' for hi in his]
 main += ['    default: return trap(d, pc, "no translation for this address");', '    }', '}']
+# The same dispatch as a table, one entry per page (pc >> 8): c71_run (engine/c25/c25_core.c) calls the page's function
+# straight. A page with no translation is the dispatcher itself, which traps as before.
+main += ['', f'bool (*const {a.func}_pages[256])(c71_t *d, int pc) = {{']
+main += ['    ' + ', '.join(cname(hi) if hi in chunks else a.func for hi in range(k, k + 4)) + ',' for k in range(0, 256, 4)]
+main += ['};']
 open(a.out, 'w').write('\n'.join(main) + '\n')
 # BIOS sites (the same c71.bin in every game) are data-driven and covered by every game's coverage: one summary line.
 # A site in a GAME program with no readable table is a real gap in a coverage-only translation: named.
