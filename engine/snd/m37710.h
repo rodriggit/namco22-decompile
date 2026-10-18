@@ -77,6 +77,7 @@ struct m37710_s {
     uint16_t analog[8];
     uint16_t ad_result[8];
     uint64_t ad_due;            /* 0 = no conversion in flight */
+    uint64_t ev_due;            /* before this cycle no timer underflows and no conversion ends; 0 = work it out again */
     bool     use_b;             /* set for one instruction by the 0x42 prefix */
     const uint8_t *ops;         /* operand bytes supplied by translated code (NULL = fetch from the bus) */
     uint32_t fetches;           /* bytes fetched as instruction stream (length census) */
@@ -129,7 +130,14 @@ int  m37710_run  (m37710_t *c, int cycles);
 /* Recognise a latched interrupt now, at this instruction boundary. Called
  * for you by m37710_run(); exposed so a tracer can sample the PC at the same
  * point the hardware decides. */
-void m37710_service(m37710_t *c);
+void m37710_service_full(m37710_t *c);
+/* Called before every instruction, and almost always with nothing to do: the timers and the A-D are only brought up to
+ * date once `ev_due` is reached, and an interrupt is only arbitrated when one is latched and the mask allows it --
+ * exactly the cases in which m37710_service_full() would change anything. */
+static inline void m37710_service(m37710_t *c)
+{
+    if (c->cycles >= c->ev_due || (c->pending && !(c->ps & M377_I))) m37710_service_full(c);
+}
 
 /* Raise one of the EXTERNAL interrupt pins. The board drives INT0 and INT2
  * (namcos22.cpp's `mcu_irq` scanline timer, at 480 and 240); the internal
