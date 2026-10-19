@@ -223,6 +223,18 @@ void rr_tick(void);
 extern int rd_poll_rec;
 void rd_poll_snap(void);
 #define RR_POLL() do { if (rd_poll_rec) rd_poll_snap(); if (rr_budget <= 0) rr_tick(); } while (0)
+/* A WAIT LOOP ("tst <word> ; beq back to the tst"), at the backward branch: the 68K waiting on a word of work RAM that only an
+ * interrupt handler or another chip changes -- and those run only in the scheduler (rr_tick). Going round spends the slice's
+ * budget and changes nothing else, so the rest of it is spent at once: rr_tick comes at the same point of the emulation, and it
+ * sets the budget afresh. Not inside a handler (rr_tick then runs nothing, it only gives the handler more), and not on a word
+ * outside RAM (a register may change with time): there it polls as before. */
+extern int rr_in_irq;
+int rr_idle_ram(uint32_t a);          /* the board: a is plain RAM that no chip changes while the 68K runs (engine/ss22_board.c) */
+#ifdef RR_TRACE                       /* the trace is compared with MAME's instruction by instruction, and MAME goes round */
+#define RR_IDLE_POLL(a) RR_POLL()
+#else
+#define RR_IDLE_POLL(a) do { if (!rr_in_irq && rr_idle_ram((uint32_t)(a))) rr_budget = 0; RR_POLL(); } while (0)
+#endif
 
 void rr_call_ind(uint32_t target, uint32_t at);
 

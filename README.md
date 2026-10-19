@@ -13,7 +13,7 @@ native PowerPC program built with devkitPro.
 > | 2D graphics (text, sprites, HUD) | ✅ Drawn on the GPU, merged with the 3D by depth |
 > | Controls (Wii Remote) | ✅ Work |
 > | Sound | ⚠️ Plays (music, effects, voices), with gaps while the game runs below full speed |
-> | Speed | ⚠️ In gameplay the game runs at about 36–40 fps and shows 18–20 frames a second (the arcade runs at 60) |
+> | Speed | ⚠️ In gameplay the game runs at about 40–42 fps and shows 20–21 frames a second (the arcade runs at 60) |
 >
 > Tested only in the **Dolphin** emulator. Not yet tried on a real Wii.
 
@@ -201,14 +201,16 @@ polygons. Every 120 frames the game writes where the time went into `wii_boot.lo
 
 **Frameskip.** The board runs every frame, but while the game is behind the arcade's clock (59.906 Hz) one frame in two
 at most is neither prepared nor drawn: no geometry stage, no draw, no wait for the screen. In gameplay that takes the game
-from about 28 fps (and 28 on screen) to about 36–40 fps, with 18–20 on screen. When the game keeps up, every frame is
+from about 28 fps (and 28 on screen) to about 40–42 fps, with 20–21 on screen. When the game keeps up, every frame is
 drawn. The Wii Remote is read on every frame, drawn or not.
 
-In gameplay an emulated frame takes about 25–28 ms: DSP 7.5–8 ms, sound 6–8 ms (the C352 3–4), 68K about 3 ms, and on the
-frames that are drawn geometry about 6.7 ms and drawing about 4 ms. What each part does on the Wii to get there:
+In gameplay an emulated frame takes about 24–25 ms: DSP 7.5–8 ms, sound 7–7.5 ms (the C352 3.5–4), the 68K the rest, and on
+the frames that are drawn geometry about 6.8 ms and drawing about 4 ms. What each part does on the Wii to get there:
 
 - **68K**: it reads its registers and its ROM and work RAM in place (one load each, instead of a byte at a time through a
-  call).
+  call). Its main loop waits for the vblank interrupt by testing a word of work RAM over and over; nothing can change that
+  word before the rest of the board runs, so the rest of its slice is spent at once (`RR_IDLE_POLL`, engine/lift_rt.h): the
+  same emulation, about 2 ms a frame less.
 - **Master DSP**: when no interrupt can be taken, `c71_run` retires an instruction itself and calls the translation of
   its 256-address page straight, through a table the translator emits (`tc_c25_exec_pages`).
 - **Sound CPU**: the timers and the A-D converter are brought up to date only when their next event is due, not before

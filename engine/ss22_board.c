@@ -86,6 +86,9 @@ static bool ss22_sys_bootstrap(void)
 ss22_sys_t g_ss22;
 static bool ss22_sys_bootstrap(void) { return true; }
 #endif
+/* lift_rt.h's RR_IDLE_POLL: the work RAM at 0xE00000 is plain memory, which only the 68K writes while it runs (the DSP, the
+ * sound MCU and the interrupts run in rr_tick) */
+int rr_idle_ram(uint32_t a) { return (a & 0xFFFFFFu) - 0xE00000u < SS22_WRAM_SIZE; }
 #ifdef RR_TRACE
 uint32_t g_ss22_last_pc;                           /* the last instruction the trace hook saw (named in an unmapped-access report) */
 #endif
