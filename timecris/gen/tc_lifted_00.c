@@ -100288,7 +100288,7 @@ A_94EE: RR_INS(0x94EEU); /* tst.w (-0x7ffa,A6) */
   P_94EE_6: RS1(0x45, ((ua600 & 0xFFFFULL) == 0x0ULL));
   A_END_94EE: ;
 A_94F2: RR_INS(0x94F2U); /* beq.b 0x000094ee */
-  P_94F2_0: if (RG1(0x45)) { RR_POLL(); goto A_94EE; }
+  P_94F2_0: if (RG1(0x45)) { RR_IDLE_POLL(ua500); goto A_94EE; }   /* the main loop's wait for the vblank handler's flag (engine/lift_rt.h; hand-edited: the lifter's input is not in the repo) */
   A_END_94F2: ;
 A_94F4: RR_INS(0x94F4U); /* st (0x00700014).l */
   P_94F4_0: MWR1(0x700014U, (0 - 0x1ULL));

@@ -14,8 +14,12 @@
 #include "ss22_game.h"
 #include "lift_cpu.h"
 #include "tc_lifted.h"
+#if defined(__WII__) || defined(__wii__)
+#include "../wii/port.h"
+#endif
 
 bool tc_c25_exec(c71_t *d, int pc);          /* gen/tc_c25.c */
+extern bool (*const tc_c25_exec_pages[256])(c71_t *d, int pc);   /* gen/tc_c25.c: the same dispatch, by page */
 
 static const eng_rom_t k_roms[] = {
     {"ts2verb.1", 0x100000, "ts2ver-b.1"}, {"ts2verb.2", 0x100000, "ts2ver-b.2"}, {"ts2verb.3", 0x100000, "ts2ver-b.3"}, {"ts2verb.4", 0x100000, "ts2ver-b.4"},
@@ -39,11 +43,17 @@ static bool tc_load_program(const char *dir)
         char p[1024]; snprintf(p, sizeof p, "%s/%s", dir, lane[l]);
         FILE *f = fopen(p, "rb");
         if (!f) { fprintf(stderr, "cannot open %s\n", p); return false; }
-        for (uint32_t i = 0; i < SS22_ROM_SIZE / 4; i++) {
-            int c = fgetc(f);
-            if (c == EOF) { fclose(f); fprintf(stderr, "short %s\n", p); return false; }
-            g_ss22.rom[i * 4 + (uint32_t)l] = (uint8_t)c;
+        /* in 64 KB reads: one fgetc a byte took and released the stream's lock four million times, which on the Wii was
+         * most of the boot (Dolphin's block profile: fgetc and the lock calls, ~70% of the time) */
+        enum { CHUNK = 0x10000 };
+        uint8_t *chunk = malloc(CHUNK);
+        if (!chunk) { fclose(f); fprintf(stderr, "no memory to read %s\n", p); return false; }
+        for (uint32_t i = 0; i < SS22_ROM_SIZE / 4; ) {
+            const uint32_t want = SS22_ROM_SIZE / 4 - i < CHUNK ? SS22_ROM_SIZE / 4 - i : (uint32_t)CHUNK;
+            if (fread(chunk, 1, want, f) != want) { free(chunk); fclose(f); fprintf(stderr, "short %s\n", p); return false; }
+            for (uint32_t k = 0; k < want; k++, i++) g_ss22.rom[i * 4 + (uint32_t)l] = chunk[k];
         }
+        free(chunk);
         fclose(f);
     }
     return true;
@@ -69,11 +79,11 @@ static const ss22_board_cfg tc_board = { "TC", 0xFFFF, 0, tc_load_program, tc_lo
 #define IN_TRIGGER 0x0010
 #define IN_PEDAL   0x0020
 static const ss22_action actions[] = {
-    { "Insert coin",  "coin",    SDL_SCANCODE_5,      SDL_SCANCODE_6,       IN_COIN,    0, SS22_PAD(SDL_CONTROLLER_BUTTON_BACK) },
-    { "Gun trigger",  "trigger", SDL_SCANCODE_SPACE,  SDL_SCANCODE_RETURN,  IN_TRIGGER, 0, SS22_PAD(SDL_CONTROLLER_BUTTON_A) | SS22_PAD(SDL_CONTROLLER_BUTTON_RIGHTSHOULDER), SDL_BUTTON_LMASK },
-    { "Foot pedal",   "pedal",   SDL_SCANCODE_Z,      SDL_SCANCODE_X,       IN_PEDAL,   0, SS22_PAD(SDL_CONTROLLER_BUTTON_B) | SS22_PAD(SDL_CONTROLLER_BUTTON_LEFTSHOULDER), SDL_BUTTON_RMASK | SDL_BUTTON_MMASK },
-    { "Service",      "service", SDL_SCANCODE_9,      SDL_SCANCODE_UNKNOWN, IN_SERVICE, 0, 0 },
-    { "Test",         "test",    SDL_SCANCODE_F2,     SDL_SCANCODE_UNKNOWN, IN_TEST,    0, 0 },
+    { "Insert coin",  "coin",    SS22_KEY_5,          SS22_KEY_6,          IN_COIN,    0, SS22_PAD(SS22_BUTTON_BACK) },
+    { "Gun trigger",  "trigger", SS22_KEY_SPACE,      SS22_KEY_RETURN,     IN_TRIGGER, 0, SS22_PAD(SS22_BUTTON_A) | SS22_PAD(SS22_BUTTON_RIGHTSHOULDER), SS22_MOUSE_LMASK },
+    { "Foot pedal",   "pedal",   SS22_KEY_Z,          SS22_KEY_X,          IN_PEDAL,   0, SS22_PAD(SS22_BUTTON_B) | SS22_PAD(SS22_BUTTON_LEFTSHOULDER), SS22_MOUSE_RMASK | SS22_MOUSE_MMASK },
+    { "Service",      "service", SS22_KEY_9,          SDL_SCANCODE_UNKNOWN, IN_SERVICE, 0, 0 },
+    { "Test",         "test",    SS22_KEY_F2,         SDL_SCANCODE_UNKNOWN, IN_TEST,    0, 0 },
 };
 static const ss22_input_game input = {
     actions, (int)(sizeof actions / sizeof *actions),
@@ -165,6 +175,16 @@ static void tc_frame(long n)
         last_mode = g_ss22.wram[TC_W_MODE]; last_lives = g_ss22.wram[TC_W_LIVES];
         fprintf(stderr, "[LIVES] frame %ld mode %d lives %d\n", n, last_mode, last_lives);
     }
+#if defined(__WII__) || defined(__wii__)
+    { static int seen = -1, seen_mode = -1;  /* the player hit: in a game every hit costs a life, so the lives byte going down is one */
+      const int mode = g_ss22.wram[TC_W_MODE];
+      /* compared in every mode but booting (0) and the attract demo (2), whose lives are not the player's: watching mode 3
+       * alone never saw a hit (the lives presumably drop while the game is in another mode for the hit) */
+      const int l = (n >= 600 && mode != 0 && mode != 2) ? g_ss22.wram[TC_W_LIVES] : -1;
+      if (l >= 0 && seen >= 0 && l < seen) ss22_input_rumble(0xFFFF, 0xFFFF, 400);   /* strong, against the soft one of each shot */
+      if (l != seen && l >= 0) wii_port_log("[WII-IN] lives %d -> %d (mode %d -> %d)", seen, l, seen_mode, mode);
+      seen = l; seen_mode = mode; }
+#endif
     if (n < 600 || g_ss22.wram[TC_W_MODE] != 3) { most_lives = 0; return; }
     if (inf_time) { const uint16_t t = wram16(TC_W_TIMER); if (t > 0 && t < 600) wram16_set(TC_W_TIMER, 3600); }
     if (inf_life) {
@@ -212,7 +232,8 @@ static const ss22_game game = {
     .board = &tc_board,
     .dsp = { { {"ts1ptrl0.18k", "ts1ptrl1.16k", "ts1ptrl2.15k"},
                {"ts1ptrm0.18j", "ts1ptrm1.16j", "ts1ptrm2.15j"},
-               {"ts1ptru0.18f", "ts1ptru1.16f", "ts1ptru2.15f"} }, 3, tc_c25_exec },        /* three planes of three chips (Prop Cycle's shape); no busy-wait poll measured yet */
+               {"ts1ptru0.18f", "ts1ptru1.16f", "ts1ptru2.15f"} }, 3, tc_c25_exec, 0, 0, tc_c25_exec_pages },        /* three planes of three chips (Prop Cycle's shape); no LAC / BNEZ-self poll: none
+                                                                                                * found in any loaded program (tried at 0x45DD and anywhere, never hit) */
     .snd = { "ts1data.8k", { "ts1wavea.2l", "ts1waveb.1l" }, { 0, 0x800000 }, 0x1000000, 0xFFFF, { 1, 2 }, { true, false } },   /* MAME's c352 region: ts1wavea.2l at 0 (ROM_LOAD16_WORD_SWAP), ts1waveb.1l at 0x800000 */
     .video = { { "ts1cg0.8d", "ts1cg1.10d", "ts1cg2.12d", "ts1cg3.13d", "ts1cg4.14d", "ts1cg5.16d", "ts1cg6.18d", NULL },
                "ts1ccrl.3d", "ts1ccrh.1d",

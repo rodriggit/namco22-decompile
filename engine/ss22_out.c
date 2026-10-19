@@ -10,6 +10,12 @@ typedef SOCKET out_sock;
 #define OUT_BAD INVALID_SOCKET
 #define out_close closesocket
 #define SEND_FLAGS 0
+#elif defined(__WII__) || defined(__wii__)
+typedef int out_sock;
+#define OUT_BAD (-1)
+#define out_close(s) ((void)(s))
+#define SEND_FLAGS 0
+#define OUT_HAS_NETWORK 0
 #else
 #include <unistd.h>
 #include <fcntl.h>
@@ -24,6 +30,7 @@ typedef int out_sock;
 #else
 #define SEND_FLAGS 0
 #endif
+#define OUT_HAS_NETWORK 1
 #endif
 #include "ss22_game.h"
 #include "ss22_input.h"
@@ -40,6 +47,8 @@ static void nonblock(out_sock s)
 {
 #ifdef _WIN32
     u_long one = 1; ioctlsocket(s, FIONBIO, &one);
+#elif defined(__WII__) || defined(__wii__)
+    (void)s;
 #else
     fcntl(s, F_SETFL, fcntl(s, F_GETFL, 0) | O_NONBLOCK);
 #endif
@@ -55,6 +64,10 @@ static void init(void)
     char *dot = strrchr(rom, '.'); if (dot) *dot = 0;
     int port = 8000; e = getenv("SS22_OUT_PORT"); if (e) port = atoi(e);
     if (port <= 0) return;
+#if defined(__WII__) || defined(__wii__)
+    (void)port;
+    return;
+#else
 #ifdef _WIN32
     WSADATA w; if (WSAStartup(MAKEWORD(2, 2), &w) != 0) return;
 #endif
@@ -70,20 +83,26 @@ static void init(void)
     }
     nonblock(lsock);
     fprintf(stderr, "[OUT] outputs on tcp %s:%d (MAME network-output protocol, set '%s')\n", bind_to, port, rom);
+#endif
 }
 
 static void send_all(const char *s)
 {
+#if OUT_HAS_NETWORK
     const int n = (int)strlen(s);
     for (int i = 0; i < MAX_CLIENTS; i++) {
         if (clients[i] == OUT_BAD) continue;
         if (send(clients[i], s, n, SEND_FLAGS) != n) { out_close(clients[i]); clients[i] = OUT_BAD; }   /* gone, or too slow a reader: drop it */
     }
+#else
+    (void)s;
+#endif
 }
 
 void ss22_out_poll(uint16_t outs)
 {
     if (!inited) init();
+#if OUT_HAS_NETWORK
     if (lsock != OUT_BAD) {
         for (;;) {                                           /* new listeners */
             out_sock c = accept(lsock, NULL, NULL);
@@ -96,6 +115,7 @@ void ss22_out_poll(uint16_t outs)
             clients[slot] = c;
         }
     }
+#endif
     const uint16_t diff = (uint16_t)(outs ^ prev);
     if (!diff) return;
     for (int i = 0; i < 16; i++) {

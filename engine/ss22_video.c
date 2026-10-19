@@ -24,8 +24,16 @@ bool ss22_video_init(const char *dir)
     ss22_gl_set_hud(&c->hud);                /* widescreen: the compositor learns this game's HUD (Prop Cycle, which links it too, never does) */
     if (!eng_load_texture_roms(dir, c->cg, c->ccrl, c->ccrh)) return false;
 
-    const size_t chip = 0x200000, region = c->sprite_region;
-    uint8_t *tiles = malloc(region);
+    const size_t chip = 0x200000;
+#if defined(__WII__) || defined(__wii__)
+    /* Wii: stop the region after the last chip when its fill is the transparent pen (0xFF): a tile past the end is skipped
+     * (sprite_hw.c draw_tile_dst), which draws exactly what an all-0xFF tile would. Time Crisis: 12 MB instead of 16. */
+    const size_t chips_end = (size_t)c->n_scg * chip;
+    const size_t region = (c->sprite_fill == 0xFF && chips_end && chips_end < c->sprite_region) ? chips_end : c->sprite_region;
+#else
+    const size_t region = c->sprite_region;
+#endif
+    uint8_t *tiles = eng_alloc_big(region, 0);
     if (!tiles) return false;
     memset(tiles, c->sprite_fill, region);
     for (int i = 0; i < c->n_scg; i++) {
@@ -34,7 +42,7 @@ bool ss22_video_init(const char *dir)
         if (!f || fread(tiles + i * chip, 1, chip, f) != chip) {
             fprintf(stderr, "[VIDEO] cannot read %s -- no sprites\n", p);
             if (f) fclose(f);
-            free(tiles);
+            eng_free_big(tiles);
             tiles = NULL;
             break;
         }
@@ -46,6 +54,8 @@ bool ss22_video_init(const char *dir)
     g_eng_pointrom = g_ss22_pointrom; g_eng_pointrom_n = g_ss22_pointrom_words;
     return g_eng_pointrom != NULL;
 }
+
+void ss22_video_skip(void) { (void)eng_frame_walks(from_capture || ss22_dsp_slave_active()); }
 
 void ss22_video_prepare(void)
 {
@@ -80,15 +90,17 @@ static bool slurp(const char *dir, const char *name, int frame, void *dst, size_
 
 bool ss22_video_load_dump(const char *dir, int frame)
 {
-    static uint8_t raw[SS22_POLY_WORDS * 4];
+    uint8_t *raw = malloc(SS22_POLY_WORDS * 4u);
+    if (!raw) return false;
     from_capture = true;
     /* the capture has no CPU: draw its list, unless the frame is one MAME drew WITHOUT the master's list (its render_frame_active
      * dropped it: a black 3D layer over the 2D layers) -- <tag>_RENDER_NOLIST=1 says so, see tools/vid_gate.sh */
     { char v[64]; snprintf(v, sizeof v, "%s_RENDER_NOLIST", g_ss22_game->tag);
       const char *nl = getenv(v); if (!(nl && *nl == '1')) eng_frame_force_walk(); }
-    if (!slurp(dir, "polyraw", frame, raw, sizeof raw)) return false;
+    if (!slurp(dir, "polyraw", frame, raw, SS22_POLY_WORDS * 4u)) { free(raw); return false; }
     for (uint32_t i = 0; i < SS22_POLY_WORDS; i++)         /* the share's own words, big-endian, upper bytes intact */
         g_ss22.poly[i] = (uint32_t)raw[i * 4] << 24 | raw[i * 4 + 1] << 16 | raw[i * 4 + 2] << 8 | raw[i * 4 + 3];
+    free(raw);
     uint8_t b16[16], czb[512];
     bool ok = slurp(dir, "pal", frame, g_ss22.pal, sizeof g_ss22.pal) && slurp(dir, "mix", frame, g_ss22.mixer, sizeof g_ss22.mixer) &&
               slurp(dir, "cgram", frame, g_ss22.cgram, sizeof g_ss22.cgram) && slurp(dir, "text", frame, g_ss22.text, sizeof g_ss22.text) &&

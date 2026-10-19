@@ -13,6 +13,8 @@
 #define ENG_FFB_H
 #include <stdbool.h>
 #include <stdint.h>
+
+#ifndef __WII__
 #include <SDL2/SDL.h>
 
 int  eng_ffb_decode(uint8_t b);                 /* -63..63: negative pushes toward the higher A-D side */
@@ -37,4 +39,5 @@ void eng_ffb_forget(SDL_JoystickID id);
 void eng_ffb_force(int motor, int strength, bool reverse);
 void eng_ffb_force_f(double f, int strength, bool reverse);   /* the same in full resolution: f = motor / 63, -1..1 */
 void eng_ffb_close(void);                       /* stop the force and let go of the device (also run at exit) */
+#endif
 #endif

@@ -12,6 +12,7 @@ set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_EXTENSIONS ON)
 add_compile_options(-fno-strict-aliasing -fwrapv)
 option(PORTABLE "Bind glibc symbols to baseline versions (runs on glibc >= 2.34)" ON)
+option(TC_WII_PORT "Build the Time Crisis native Wii backend instead of the desktop host" OFF)
 if(PORTABLE AND NOT WIN32 AND CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")
   add_compile_options(-include ${CMAKE_CURRENT_SOURCE_DIR}/../include/glibc_compat.h)
 endif()
@@ -22,7 +23,7 @@ include(${CMAKE_CURRENT_SOURCE_DIR}/../engine/engine.cmake)
 #   python3 ../tools/namco22/lift.py decompiled/pcode.txt gen tc timecris_main.bin && python3 ../tools/namco22/lift_split.py gen/tc_lifted.c 16
 # 58 MB of goto-heavy C in ONE file needed more than 8 GB of gcc; the parts (shared tool lift_split.py) need about 1 GB each. -O1 is plenty.
 file(GLOB TC_LIFTED CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/gen/tc_lifted_*.c)
-set_source_files_properties(${TC_LIFTED} PROPERTIES COMPILE_OPTIONS "-O1;-w")
+set_source_files_properties(${TC_LIFTED} PROPERTIES COMPILE_OPTIONS "-Os;-w")
 
 # The MASTER DSP program (block at ROM 0xABA8C), translated from the ROM by ../tools/gen/c25_translate.py --game tc. tools/gen/c25.cov is EMPTY until
 # the oracle build has run the game: every address is then a static one and anything the oracle would need traps.
@@ -39,25 +40,31 @@ add_custom_command(OUTPUT ${CMAKE_CURRENT_SOURCE_DIR}/gen/tc_c25.c
   COMMENT "Translating the master DSP program to C")
 set_source_files_properties(gen/tc_c25.c PROPERTIES COMPILE_OPTIONS "-O2;-w")
 
-find_package(PkgConfig REQUIRED)
-pkg_check_modules(SDL2 REQUIRED sdl2)
-if(WIN32)
-  set(ZLIB_USE_STATIC_LIBS ON)
-endif()
-find_package(ZLIB REQUIRED)
-set(OpenGL_GL_PREFERENCE GLVND)
-find_package(OpenGL REQUIRED)
-include_directories(${SDL2_INCLUDE_DIRS})
-# Windows (MinGW-w64): same block as Dirt Dash -- win_compat.h, no console, everything static; OpenGL resolved at run time (gl_dyn.c)
-if(WIN32)
-  add_compile_options(-include ${CMAKE_CURRENT_SOURCE_DIR}/../include/win_compat.h)
-  add_link_options(-mwindows -static-libgcc -static)
-  set(SDL2_LIBRARIES ${SDL2_STATIC_LDFLAGS} ws2_32)   # engine/ss22_out.c: the MAME network-output socket (Winsock2)
-  set(TC_GL_LIB "")
-  set(TC_GL_SRC ${NAMCO22_ENGINE_DIR}/gl_dyn.c)
+if(NOT TC_WII_PORT)
+  find_package(PkgConfig REQUIRED)
+  pkg_check_modules(SDL2 REQUIRED sdl2)
+  if(WIN32)
+    set(ZLIB_USE_STATIC_LIBS ON)
+  endif()
+  find_package(ZLIB REQUIRED)
+  set(OpenGL_GL_PREFERENCE GLVND)
+  find_package(OpenGL REQUIRED)
+  include_directories(${SDL2_INCLUDE_DIRS})
+  # Windows (MinGW-w64): same block as Dirt Dash -- win_compat.h, no console, everything static; OpenGL resolved at run time (gl_dyn.c)
+  if(WIN32)
+    add_compile_options(-include ${CMAKE_CURRENT_SOURCE_DIR}/../include/win_compat.h)
+    add_link_options(-mwindows -static-libgcc -static)
+    set(SDL2_LIBRARIES ${SDL2_STATIC_LDFLAGS} ws2_32)   # engine/ss22_out.c: the MAME network-output socket (Winsock2)
+    set(TC_GL_LIB "")
+    set(TC_GL_SRC ${NAMCO22_ENGINE_DIR}/gl_dyn.c)
+  else()
+    set(TC_GL_LIB OpenGL::GL)
+    set(TC_GL_SRC "")
+  endif()
 else()
-  set(TC_GL_LIB OpenGL::GL)
+  set(TC_GL_LIB "")
   set(TC_GL_SRC "")
+  find_package(ZLIB REQUIRED)
 endif()
 
 # The SOUND MCU program (ts1data.8k), translated to C from the ROM file by the shared tools/gen/snd_translate.py (--game tc). tools/gen/snd.cov: the
@@ -70,10 +77,106 @@ add_custom_command(OUTPUT ${CMAKE_CURRENT_SOURCE_DIR}/gen/tc_snd_driver.c
   COMMENT "Translating the sound MCU program to C")
 set_source_files_properties(gen/tc_snd_driver.c PROPERTIES COMPILE_OPTIONS "-O1;-w")
 
-set(TC_CORE_SRC src/tc_game.c
-    ${NAMCO22_ENGINE_LIFT_SRC} ${NAMCO22_ENGINE_C25_SRC} ${NAMCO22_ENGINE_SND_SRC}
-    ${NAMCO22_ENGINE_GL_SRC} ${NAMCO22_ENGINE_SS22_SRC} ${NAMCO22_ENGINE_SS22_HOST_SRC} ${NAMCO22_ENGINE_UI_SRC} ${NAMCO22_ENGINE_ROMZIP_SRC} ${TC_GL_SRC}
-    ${TC_LIFTED} gen/tc_c25.c)
+if(TC_WII_PORT)
+  # the Super 22 layers without ss22_gl.c (OpenGL): the Wii draws the frame with GX (engine/ss22_gx.c)
+  set(TC_CORE_SRC src/tc_game.c
+      ${NAMCO22_ENGINE_LIFT_SRC} ${NAMCO22_ENGINE_C25_SRC} ${NAMCO22_ENGINE_SND_SRC}
+      ${NAMCO22_ENGINE_DIR}/fog_hw.c
+      ${NAMCO22_ENGINE_DIR}/sprite_hw.c
+      ${NAMCO22_ENGINE_DIR}/text_hw.c
+      ${NAMCO22_ENGINE_DIR}/frame_rule.c
+      ${NAMCO22_ENGINE_DIR}/ss22_gx.c
+  ${NAMCO22_ENGINE_DIR}/eng.c
+    ${NAMCO22_ENGINE_DIR}/geo_hw.c
+    ${NAMCO22_ENGINE_DIR}/slave_list.c
+      ${NAMCO22_ENGINE_DIR}/ss22_host.c
+      ${NAMCO22_ENGINE_DIR}/ss22_input_wii.c
+      ${NAMCO22_ENGINE_DIR}/ss22_out.c
+      ${NAMCO22_ENGINE_DIR}/ss22_board.c
+      ${NAMCO22_ENGINE_DIR}/ss22_link.c
+      ${NAMCO22_ENGINE_DIR}/c139.c
+      ${NAMCO22_ENGINE_DIR}/ss22_dsp.c
+      ${NAMCO22_ENGINE_DIR}/ss22_snd.c
+      ${NAMCO22_ENGINE_DIR}/ss22_video.c
+      ${NAMCO22_ENGINE_DIR}/ss22_env.c
+      ${NAMCO22_ENGINE_DIR}/ss22_run.c
+      ${NAMCO22_ENGINE_DIR}/eng_cfg.c
+      ${NAMCO22_ENGINE_ROMZIP_SRC}
+      ${TC_LIFTED} gen/tc_c25.c gen/tc_snd_driver.c)
+else()
+  set(TC_CORE_SRC src/tc_game.c
+      ${NAMCO22_ENGINE_LIFT_SRC} ${NAMCO22_ENGINE_C25_SRC} ${NAMCO22_ENGINE_SND_SRC}
+      ${NAMCO22_ENGINE_GL_SRC} ${NAMCO22_ENGINE_SS22_SRC} ${NAMCO22_ENGINE_SS22_HOST_SRC} ${NAMCO22_ENGINE_UI_SRC} ${NAMCO22_ENGINE_ROMZIP_SRC} ${TC_GL_SRC}
+      ${TC_LIFTED} gen/tc_c25.c)
+endif()
+
+if(TC_WII_PORT)
+  if(NOT CMAKE_SYSTEM_NAME STREQUAL "Nintendo" AND NOT CMAKE_SYSTEM_NAME STREQUAL "Wii" AND NOT CMAKE_SYSTEM_NAME STREQUAL "Generic")
+    message(FATAL_ERROR "TC_WII_PORT requires a Nintendo/Wii or devkitPro cross toolchain. Use the custom Wii toolchain file.")
+  endif()
+
+  if(NOT DEFINED DEVKITPRO)
+    message(FATAL_ERROR "DEVKITPRO must be set for the Wii target.")
+  endif()
+
+  message(STATUS "Building native Time Crisis Wii backend")
+  add_compile_definitions(__WII__)
+  set(TC_WII_SRC
+      ${CMAKE_CURRENT_SOURCE_DIR}/wii/port.c
+  )
+  add_executable(tc_wii ${TC_CORE_SRC} ${TC_WII_SRC})
+  # build-wii/tc_wii.elf: Dolphin opens an ELF by its extension (the bare name was not recognised)
+  set_target_properties(tc_wii PROPERTIES SUFFIX ".elf")
+  target_compile_definitions(tc_wii PRIVATE __WII__)
+    # -O2: the engine (board, DSP and sound hosts, sprites, text, geometry, the GX renderer) has no -O of its own and the
+    # toolchain sets no build type, so it was built at -O0. The generated sources keep their own -O (set per file above, later
+    # on the command line, so it wins).
+    target_compile_options(tc_wii PRIVATE
+        -O2
+        -ffunction-sections -fdata-sections
+        -fno-unwind-tables -fno-asynchronous-unwind-tables)
+    target_link_options(tc_wii PRIVATE -Wl,--gc-sections)
+  target_include_directories(tc_wii PRIVATE
+      ${CMAKE_CURRENT_SOURCE_DIR}/wii
+      ${DEVKITPRO}/libogc/include
+      ${DEVKITPRO}/portlibs/ppc/include
+      ${DEVKITPRO}/portlibs/wii/include
+  )
+  target_link_directories(tc_wii PRIVATE
+      ${DEVKITPRO}/libogc/lib/wii
+      ${DEVKITPRO}/portlibs/ppc/lib
+      ${DEVKITPRO}/portlibs/wii/lib
+  )
+  target_link_libraries(tc_wii wiiuse asnd bte fat ogc gcc m ZLIB::ZLIB)
+
+  find_program(PPC_READELF_TOOL
+      NAMES powerpc-eabi-readelf powerpc-eabi-readelf.exe
+      HINTS ${DEVKITPRO}/devkitPPC/bin)
+  if(PPC_READELF_TOOL)
+    add_custom_command(TARGET tc_wii POST_BUILD
+        COMMAND ${CMAKE_COMMAND}
+            -DREADELF_TOOL=${PPC_READELF_TOOL}
+            -DELF_FILE=$<TARGET_FILE:tc_wii>
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/wii/check_mem1_segments.cmake
+        COMMENT "Checking tc_wii PT_LOAD ranges against Wii memory map")
+  else()
+    message(WARNING "powerpc-eabi-readelf not found (expected under ${DEVKITPRO}/devkitPPC/bin); MEM1 PT_LOAD check will be skipped")
+  endif()
+
+  find_program(ELF2DOL_TOOL
+      NAMES elf2dol elf2dol.exe
+      HINTS ${DEVKITPRO}/tools/bin)
+  if(ELF2DOL_TOOL)
+    add_custom_command(TARGET tc_wii POST_BUILD
+        COMMAND ${ELF2DOL_TOOL} $<TARGET_FILE:tc_wii> $<TARGET_FILE_DIR:tc_wii>/tc_wii.dol
+        BYPRODUCTS $<TARGET_FILE_DIR:tc_wii>/tc_wii.dol
+        COMMENT "Converting tc_wii ELF to DOL")
+  else()
+    message(WARNING "elf2dol not found (expected under ${DEVKITPRO}/tools/bin); tc_wii.dol will not be generated automatically")
+  endif()
+
+  return()
+endif()
 
 # THE GAME: the 68K lifted, the master DSP and the sound MCU translated -- no interpreter anywhere (HARD RULE 1/2)
 if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/tools/gen/snd.cov)

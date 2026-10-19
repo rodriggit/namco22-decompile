@@ -27,6 +27,7 @@
 #include "c352.h"
 #include "audio_out.h"
 #include "eng_cfg.h"
+#include "eng.h"                          /* eng_alloc_big */
 
 /* how the sound program's instructions get executed: gen/ss22_snd_driver.c (the translation) in the game,
  * tools/sndoracle/sound_oracle.c (fetch/decode) in dd_oracle */
@@ -170,6 +171,11 @@ static void wav_header(FILE *f, uint32_t frames)
     fseek(f, 0, SEEK_SET); fwrite(h, 1, 44, f);
 }
 
+#if defined(__WII__) || defined(__wii__)
+uint64_t wii_port_usec(void);
+uint64_t g_wii_chip_us;                          /* time inside c352_generate, for the [WII-EMU] line (engine/ss22_run.c) */
+#endif
+
 /* generate the chip's output up to board time t */
 static void chip_sync(uint64_t t)
 {
@@ -179,7 +185,13 @@ static void chip_sync(uint64_t t)
     while (chip_done < target) {
         uint64_t left = target - chip_done;
         int n = left > 512 ? 512 : (int)left;
+#if defined(__WII__) || defined(__wii__)
+        const uint64_t wii_t0 = wii_port_usec();
         c352_generate(&chip, buf, n);
+        g_wii_chip_us += wii_port_usec() - wii_t0;
+#else
+        c352_generate(&chip, buf, n);
+#endif
         chip_done += (uint64_t)n;
         if (out_live) eng_audio_push(buf, n);
         if (dump) {
@@ -279,6 +291,38 @@ bool ss22_snd_init(const char *dir)
 {
     const ss22_snd_cfg *c = &g_ss22_game->snd;
     g_ss22_snd_set_run = ss22_snd_set_run;           /* syscon 0x16 reaches this MCU (engine/ss22_board.c) */
+#if defined(__WII__) || defined(__wii__)
+    /* Wii: MEM2 cannot spare MAME's whole wave region (Time Crisis: 16 MB for 6 MB of chips). Keep each chip's own bytes in one
+     * compact buffer and give the C352 a window per chip at its region offset; the gaps read 0, as the zero-filled region does. */
+    {
+        size_t sz[2] = { 0, 0 }, total = 0, at = 0;
+        c352_seg_t seg[2];
+        int ns = 0;
+        for (int i = 0; i < 2; i++) {
+            if (!c->wave[i]) continue;
+            char p[1024]; snprintf(p, sizeof p, "%s/%s", dir, c->wave[i]);
+            FILE *f = fopen(p, "rb");
+            if (f) { if (fseek(f, 0, SEEK_END) == 0) { const long n = ftell(f); sz[i] = n > 0 ? (size_t)n : 0; } fclose(f); }
+            if (sz[i] > 0x400000) sz[i] = 0x400000;      /* the slot slurp_part reads, as the desktop path */
+            if (c->wave_off[i] + sz[i] > c->wave_size) sz[i] = c->wave_size > c->wave_off[i] ? c->wave_size - c->wave_off[i] : 0;
+            total += sz[i];
+        }
+        rom = eng_alloc_big(0x80000, 1);                 /* kept for the run: from the arenas, not the heap (eng.h) */
+        wave = total ? eng_alloc_big(total, 1) : NULL;
+        if (!rom || !wave || !slurp(dir, c->rom, rom, 0x80000)) return false;
+        chip_ok = true;
+        for (int i = 0; chip_ok && i < 2; i++) {
+            if (!c->wave[i]) continue;
+            uint8_t *w = wave + at;
+            chip_ok = sz[i] > 0 && slurp_part(dir, c->wave[i], w, sz[i], true);
+            if (chip_ok && c->wave_swap[i])              /* ROM_LOAD16_WORD_SWAP, as below */
+                for (size_t k = 0; k < (sz[i] & ~(size_t)1); k += 2) { const uint8_t t = w[k]; w[k] = w[k + 1]; w[k + 1] = t; }
+            seg[ns++] = (c352_seg_t){ c->wave_off[i], (uint32_t)sz[i], w };
+            at += sz[i];
+        }
+        if (chip_ok) { c352_init_segments(&chip, seg, ns); c352_reset(&chip); }
+    }
+#else
     rom = calloc(1, 0x80000);
     wave = calloc(1, c->wave_size);
     if (!rom || !wave || !slurp(dir, c->rom, rom, 0x80000)) return false;
@@ -291,6 +335,7 @@ bool ss22_snd_init(const char *dir)
             for (uint32_t k = 0; k < n; k += 2) { const uint8_t t = w[k]; w[k] = w[k + 1]; w[k + 1] = t; }
         }
     if (chip_ok) { c352_init(&chip, wave, c->wave_size); c352_reset(&chip); }
+#endif
     mix_apply();                                              /* this cabinet's speakers, at the default levels until the settings are read */
     m37710_init(&cpu, bus_r, bus_w, NULL);
     cpu.port_r = port_r; cpu.port_w = port_w;
@@ -309,8 +354,14 @@ bool ss22_snd_init(const char *dir)
 /* board time of scanline `line` of frame k, in MCU cycles */
 static uint64_t pin_time(uint64_t k, uint64_t line)
 {
+#if defined(__SIZEOF_INT128__)
     const unsigned __int128 num = (unsigned __int128)MCU_HZ * 1000u, den = (unsigned __int128)FPS_X1000 * VLINES;
     return (uint64_t)(((unsigned __int128)(k * VLINES + line) * num) / den);
+#else
+    const uint64_t num = (uint64_t)MCU_HZ * 1000u;
+    const uint64_t den = (uint64_t)FPS_X1000 * VLINES;
+    return (uint64_t)(((uint64_t)(k * VLINES + line) * num) / den);
+#endif
 }
 static int64_t pin_time_n(uint64_t n)
 {

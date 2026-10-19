@@ -39,6 +39,7 @@ void m37710_reset(m37710_t *c)
     c->irq_taken = 0;
     c->t_on = 0;
     c->ad_due = 0;
+    c->ev_due = 0;
     memset(c->ad_result, 0, sizeof c->ad_result);
     memset(c->sfr, 0, sizeof c->sfr);
     /* UARTs as MAME resets them (m37710.cpp device_reset): control 0 = 8,
@@ -143,11 +144,14 @@ void m37710_irq(m37710_t *c, int vector_offset)
  * it for free: popping the saved status word is what leaves a handler. A
  * source whose control register holds priority 0 is disabled and can never
  * win, since the comparison is strict. */
-void m37710_service(m37710_t *c)
+void m37710_service_full(m37710_t *c)
 {
     int i, best = -1, bestpri;
-    timers_tick(c);
-    adc_tick(c);
+    if (c->cycles >= c->ev_due) {        /* before ev_due both ticks are no-ops (m37710_next_event takes the same minimum) */
+        timers_tick(c);
+        adc_tick(c);
+        c->ev_due = m37710_next_event(c);
+    }
     if (!c->pending || flag(c, M377_I)) return;
     bestpri = (c->ps >> M377_IPL_SHIFT) & 7;
     for (i = IRQ_N - 1; i >= 0; i--) {
@@ -197,6 +201,7 @@ static void timer_arm(m37710_t *c, int n)
     if (reload == 0 && (mode & 0xC0) == 0) { c->t_on &= (uint8_t)~(1u << n); return; }
     c->t_on |= (uint8_t)(1u << n);
     c->t_next[n] = c->cycles + (uint64_t)(reload + 1) * TSCALE[(mode >> 6) & 3] + (uint64_t)g_tjitter;
+    c->ev_due = 0;                              /* the next event may now be sooner */
 }
 
 /* Internal peripheral registers. Writing the count-start register arms every
@@ -241,6 +246,7 @@ void m377_sfr_w(m37710_t *c, uint32_t a, uint8_t v)
             c->ad_due = c->cycles + 57u * 2u * ((v & 0x80) ? 2u : 4u);
         else if (!(v & 0x40))
             c->ad_due = 0;
+        c->ev_due = 0;
         return;
     }
     if (a == 0x40) {

@@ -5,6 +5,7 @@
 
 # Made by the build or the game.
 /build/
+/build-wii/
 /build-win/
 /gen/
 windows-release/
@@ -93,5 +94,6 @@ __pycache__/
 /cybsled/cs21.nv
 /cybsled/cs21.nv.tmp
 /cybsled/screenshots/
+/.vscode/
 *.log
 *.ppm

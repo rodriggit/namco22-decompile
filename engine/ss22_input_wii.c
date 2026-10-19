@@ -1,0 +1,158 @@
+#include <stdbool.h>
+#include <string.h>
+
+#include "ss22_input.h"
+#include "ss22_board.h"
+#include "ss22_host.h"
+#include "../timecris/wii/port.h"
+
+static const ss22_input_game *game;
+static float aim_x = 0.5f, aim_y = 0.5f;
+static bool aim_on;
+static void rumble_step(void);
+
+const eng_ui_page *ss22_input_page(void)
+{
+    return NULL;
+}
+
+void ss22_input_init(const ss22_input_game *g)
+{
+    game = g;
+}
+
+void ss22_input_event(const SDL_Event *e)
+{
+    (void)e;
+}
+
+void ss22_input_update(void)
+{
+    if (!game) return;
+
+    wii_platform_input in;
+    wii_port_poll_input(&in);
+    rumble_step();
+
+    uint16_t pressed = 0;
+    unsigned wheel = 0x200;
+    unsigned pedal[2] = { 0, 0 };
+
+    for (int i = 0; i < game->n; i++) {
+        const ss22_action *ac = &game->actions[i];
+        bool held = false;
+
+        if (ac->bit == 0) {
+            continue;
+        }
+
+        if (!strcmp(ac->key, "coin") && in.coin) held = true;
+        else if (!strcmp(ac->key, "service") && in.service) held = true;
+        else if (!strcmp(ac->key, "test") && in.test) held = true;
+        else if (!strcmp(ac->key, "trigger") && in.trigger) held = true;
+        else if (!strcmp(ac->key, "pedal") && in.pedal) held = true;
+
+        if (held) pressed |= ac->bit;
+    }
+
+    if (game->light_gun) {
+        /* Every frame, as the desktop mouse: the gun's position is live, and pointing off-screen is how the player reloads. */
+        aim_on = !in.offscreen;
+        if (aim_on) {
+            uint32_t ir_w, ir_h;
+            wii_port_ir_size(&ir_w, &ir_h);
+            const float nx = (float)in.gun_x / (float)ir_w;
+            const float ny = (float)in.gun_y / (float)ir_h;
+            aim_x = nx < 0.0f ? 0.0f : nx > 1.0f ? 1.0f : nx;
+            aim_y = ny < 0.0f ? 0.0f : ny > 1.0f ? 1.0f : ny;
+            g_ss22_gun_x = (uint16_t)(68 + aim_x * 626);
+            g_ss22_gun_y = (uint16_t)(43 + aim_y * 241);
+        }
+        g_ss22_gun_off = !aim_on;
+    }
+
+    if (game->service_bit && in.service) pressed |= game->service_bit;
+    if (game->test_bit && in.test) pressed |= game->test_bit;
+
+    game->send(pressed, wheel, pedal[0], pedal[1]);
+}
+
+void ss22_input_neutral(void)
+{
+    if (game) {
+        game->send(game->test_bit ? game->test_bit : 0, 0x200, 0, 0);
+    }
+    aim_on = false;
+    g_ss22_gun_off = true;
+}
+
+bool ss22_input_aim(float *nx, float *ny)
+{
+    if (!game || !game->light_gun || !aim_on) return false;
+    if (nx) *nx = aim_x;
+    if (ny) *ny = aim_y;
+    return true;
+}
+
+void ss22_input_motor(uint8_t b)
+{
+    (void)b;
+}
+
+/* RUMBLE. The Wiimote's motor is only on or off, so strength is how long it runs: a soft rumble (the gun's recoil, which
+ * engine/ss22_out.c asks for at low 0xC000) for half the time asked (90 ms: 3 frames, a tap), a strong one (low 0xF000 and up:
+ * the player hit, timecris/src/tc_game.c) for all of it. Single frames on and off were too short for the motor to spin up.
+ * A soft one never cuts a strong one short, and after one the shots of the next RUMBLE_SOFT_GAP frames do not tap again:
+ * a burst of shots added up to one long, strong buzz. Stepped once a frame by ss22_input_update, which runs on frames the
+ * frameskip does not draw too. */
+#define RUMBLE_SOFT_GAP 9                    /* frames from one soft tap to the next it allows: 150 ms */
+static int rumble_left, rumble_strong, rumble_gap;
+static bool rumble_now;
+
+void ss22_input_rumble(uint16_t low, uint16_t high, uint32_t ms)
+{
+    (void)high;
+    const int frames = (int)((ms * 60u + 999u) / 1000u);
+    const int strong = low >= 0xF000;
+    if (frames <= 0) return;
+    { static unsigned soft_n;                 /* into the boot log: does a request come at all (the first soft one, every strong one) */
+      if (strong) wii_port_log("[WII-IN] rumble: strong for %d frames (after %u soft ones)", frames, soft_n);
+      else if (soft_n++ == 0) wii_port_log("[WII-IN] rumble: the first soft one (the gun's recoil), %d frames", frames); }
+    if (strong) {
+        if (!rumble_strong || frames > rumble_left) rumble_left = frames;
+        rumble_strong = 1;
+    } else if ((!rumble_strong || rumble_left == 0) && rumble_gap == 0) {
+        rumble_left = (frames + 1) / 2;
+        rumble_strong = 0;
+        rumble_gap = RUMBLE_SOFT_GAP;
+    }
+}
+
+static void rumble_step(void)
+{
+    bool on = false;
+    if (rumble_gap > 0) rumble_gap--;
+    if (rumble_left > 0) {
+        on = true;
+        if (--rumble_left == 0) rumble_strong = 0;
+    }
+    if (on != rumble_now) {
+        static bool logged;
+        if (on && !logged) { logged = true; wii_port_log("[WII-IN] rumble: the motor on for the first time"); }
+        wii_port_rumble(on); rumble_now = on;
+    }
+}
+
+void ss22_input_kick(void)
+{
+}
+
+void ss22_input_kick_frame(void)
+{
+}
+
+void ss22_input_close(void)
+{
+    rumble_left = 0; rumble_gap = 0;
+    if (rumble_now) { wii_port_rumble(false); rumble_now = false; }
+}

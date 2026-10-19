@@ -53,7 +53,12 @@ typedef struct ss22_sys {
     uint32_t n_unmapped, n_romwrite;
 } ss22_sys_t;
 
+#if defined(__WII__) || defined(__wii__)
+extern ss22_sys_t *g_ss22_ptr;
+#define g_ss22 (*g_ss22_ptr)
+#else
 extern ss22_sys_t g_ss22;
+#endif
 
 typedef struct ss22_hw {
     uint32_t irq_enabled, irq_state;      /* one bit per syscon line 0..3 */

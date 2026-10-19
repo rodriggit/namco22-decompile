@@ -25,6 +25,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "ss22_game.h"
+#include "eng.h"                          /* eng_alloc_big */
 #include "c25.h"
 #ifdef SS22_ORACLE
 #include "c25_oracle.h"
@@ -69,24 +70,28 @@ static bool load_pointrom(const char *dir)
 {
     const ss22_dsp_cfg *c = &g_ss22_game->dsp;
     const uint32_t chip = 0x80000, n = (uint32_t)c->chips * chip;   /* the region is three planes of `chips` chips, in order */
-    uint8_t *b = malloc(3 * (size_t)n);
-    g_ss22_pointrom = malloc(n * sizeof *g_ss22_pointrom);
-    if (!b || !g_ss22_pointrom) return false;
-    for (int p = 0; p < 3; p++)
-        for (int k = 0; k < c->chips; k++) {
+    /* one chip position at a time (its three planes, 1.5 MB) rather than the whole region at once (4.5 MB): the same words,
+     * a third of the temporary memory */
+    uint8_t *b = malloc(3 * (size_t)chip);
+    g_ss22_pointrom = eng_alloc_big(n * sizeof *g_ss22_pointrom, 0);
+    if (!b || !g_ss22_pointrom) { free(b); return false; }
+    for (int k = 0; k < c->chips; k++) {
+        for (int p = 0; p < 3; p++) {
             char path[1024];
             snprintf(path, sizeof path, "%s/%s", dir, c->pointrom[p][k]);
             FILE *f = fopen(path, "rb");
-            if (!f || fread(b + (size_t)p * n + (size_t)k * chip, 1, chip, f) != chip) {
+            if (!f || fread(b + (size_t)p * chip, 1, chip, f) != chip) {
                 fprintf(stderr, "[DSP] cannot read %s\n", path);
                 if (f) fclose(f);
                 free(b); return false;
             }
             fclose(f);
         }
-    for (uint32_t i = 0; i < n; i++) {
-        uint32_t v = (uint32_t)b[2 * (size_t)n + i] << 16 | (uint32_t)b[n + i] << 8 | b[i];
-        g_ss22_pointrom[i] = (int32_t)(v << 8) >> 8;         /* signed24 */
+        int32_t *dst = g_ss22_pointrom + (size_t)k * chip;
+        for (uint32_t i = 0; i < chip; i++) {
+            uint32_t v = (uint32_t)b[2 * (size_t)chip + i] << 16 | (uint32_t)b[chip + i] << 8 | b[i];
+            dst[i] = (int32_t)(v << 8) >> 8;                 /* signed24 */
+        }
     }
     g_ss22_pointrom_words = n;
     free(b);
@@ -103,6 +108,7 @@ static void setup(c71_t *d, uint32_t *poly)
     d->idle_halts = 1;                    /* TI IDLE: INTM 0, halt until an interrupt */
     d->port3_bioz = 1;
     d->xlat = g_ss22_game->dsp.xlat;
+    d->xlat_pages = g_ss22_game->dsp.xlat_pages;
     d->spin_pc = g_ss22_game->dsp.spin_pc; d->spin_op = g_ss22_game->dsp.spin_op;
     d->slave_w = slave_w; d->port3_r = port3_r;    /* render_w: not used on Super 22 */
     d->pdp_begin = ss22_video_pdp_begin;    /* MAME's render_frame_active: which screen updates draw the list (engine/frame_rule.h) */

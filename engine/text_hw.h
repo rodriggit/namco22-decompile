@@ -37,5 +37,8 @@ int  text_load_regs(text_state *st, const uint8_t *cg, const uint8_t *pal, const
  *   the alpha channel for the caller to blend against the real frame. */
 void text_render(const text_state *st, const fog_state *fog,
                  uint8_t *rgba, int gate_mode);
+/* text_render's gate_mode 0 pixels inside one rectangle of the 640x480 layer only (cleared first, the rest untouched): a
+ * renderer that keeps the layer between frames redraws just the part whose tiles changed. */
+void text_render_rect(const text_state *st, const fog_state *fog, uint8_t *rgba, int x, int y, int w, int h);
 
 #endif /* TEXT_HW_H */

@@ -82,12 +82,43 @@ int text_load_frame_into(text_state *st, const char *dir, int frame,
     return 1;
 }
 
+static void render_rect(const text_state *st, const fog_state *fog, uint8_t *rgba, int gate_mode,
+                        int x_lo, int y_lo, int x_hi, int y_hi);
+
 void text_render(const text_state *st, const fog_state *fog,
                  uint8_t *rgba, int gate_mode)
 {
     memset(rgba, 0, (size_t)TW * TH * 4);
     if (!st || !st->valid) return;
 
+    if (gate_mode) {                       /* mixer background, gamma applied */
+        uint8_t b0 = fog->bg[0], b1 = fog->bg[1], b2 = fog->bg[2];
+        if (fog->have_gamma) { b0 = fog->gamma[0][b0]; b1 = fog->gamma[1][b1];
+                               b2 = fog->gamma[2][b2]; }
+        for (long i = 0; i < (long)TW * TH; i++) {
+            rgba[i*4] = b0; rgba[i*4+1] = b1; rgba[i*4+2] = b2; rgba[i*4+3] = 255;
+        }
+    }
+    render_rect(st, fog, rgba, gate_mode, 0, 0, TW, TH);
+}
+
+/* The same pixels as text_render (gate_mode 0) inside one rectangle of the 640x480 layer only: cleared, then drawn. */
+void text_render_rect(const text_state *st, const fog_state *fog, uint8_t *rgba, int x, int y, int w, int h)
+{
+    if (x < 0) { w += x; x = 0; }
+    if (y < 0) { h += y; y = 0; }
+    if (x + w > TW) w = TW - x;
+    if (y + h > TH) h = TH - y;
+    if (w <= 0 || h <= 0) return;
+    for (int r = y; r < y + h; r++) memset(rgba + ((size_t)r * TW + (size_t)x) * 4, 0, (size_t)w * 4);
+    if (!st || !st->valid) return;
+    render_rect(st, fog, rgba, 0, x, y, x + w, y + h);
+}
+
+/* the layer's pixels in [x_lo, x_hi) x [y_lo, y_hi), over what rgba already holds */
+static void render_rect(const text_state *st, const fog_state *fog, uint8_t *rgba, int gate_mode,
+                        int x_lo, int y_lo, int x_hi, int y_hi)
+{
     const uint8_t *cg = st->cgram;
     const uint8_t *textram = cg + 0x1E000;
     const uint8_t *pal = st->pal;
@@ -100,19 +131,10 @@ void text_render(const text_state *st, const fog_state *fog,
     int fade_f = fog->screen_fade_factor;
     int alpha_f = fog->text_alpha;
 
-    if (gate_mode) {                       /* mixer background, gamma applied */
-        uint8_t b0 = fog->bg[0], b1 = fog->bg[1], b2 = fog->bg[2];
-        if (fog->have_gamma) { b0 = fog->gamma[0][b0]; b1 = fog->gamma[1][b1];
-                               b2 = fog->gamma[2][b2]; }
-        for (long i = 0; i < (long)TW * TH; i++) {
-            rgba[i*4] = b0; rgba[i*4+1] = b1; rgba[i*4+2] = b2; rgba[i*4+3] = 255;
-        }
-    }
-
-    for (int y = 0; y < TH; y++) {
+    for (int y = y_lo; y < y_hi; y++) {
         int ty = (y + sy) & 0x3FF;
         int trow = ty >> 4, cy = ty & 15;
-        for (int x = 0; x < TW; x++) {
+        for (int x = x_lo; x < x_hi; x++) {
             int tx = (x + sx) & 0x3FF;
             int ti = (trow * 64 + (tx >> 4)) * 2;
             uint16_t d = (uint16_t)((textram[ti] << 8) | textram[ti + 1]);

@@ -89,6 +89,8 @@ int  sprite_collect(const sprite_state *st, const fog_state *fog,
 /* Render one sprite into a w*h RGBA buffer whose origin is (it->x0, it->y0). */
 void sprite_render_item(const sprite_state *st, const fog_state *fog,
                         const sprite_item *it, uint8_t *rgba, int compose_alpha);
+/* A hash of everything sprite_render_item reads for the item (the tile ROM aside): equal keys, equal pixels. */
+uint64_t sprite_item_key(const sprite_state *st, const fog_state *fog, const sprite_item *it);
 
 #define SPR_W 640
 #define SPR_H 480

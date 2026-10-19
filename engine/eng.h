@@ -75,4 +75,12 @@ extern uint16_t g_eng_pal_gen[ENG_PAL_GROUPS];
  * direct_palette, bumping the generation of each group that changed. */
 void eng_palette_from_planar(const uint8_t *planar, size_t plane_stride);
 
+/* A large buffer kept for the whole run (the ROM regions): malloc on the desktop. On the Wii it is taken straight from the
+ * MEM2 arena, else MEM1's, and only then from the heap -- libogc's heap moves to MEM2 for good at the first request MEM1
+ * cannot fit, leaving the rest of MEM1 unused, so tens of MB of regions through it made the memory left to the renderer depend
+ * on the program's size (a 3 MB smaller 68K left no room for the textures). `zero` clears it, as calloc. eng_free_big only
+ * gives back what came from the heap (an arena block is kept). */
+void *eng_alloc_big(size_t n, int zero);
+void  eng_free_big(void *p);
+
 #endif /* ENG_H */

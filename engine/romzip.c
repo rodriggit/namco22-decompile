@@ -36,8 +36,9 @@ static uint64_t rd64(const uint8_t *p) { return (uint64_t)rd32(p) | (uint64_t)rd
 /* WHY a chip that WAS in a zip was not taken, kept PER CHIP (GitHub #45: with one shared slot, a chip rejected early was later reported
  * as "no file of that name" once another chip's rejection had overwritten it), so "still missing X" says what is actually wrong with X. */
 #define WHY_MAX 256
-static char g_why[WHY_MAX][240];
-#define WHY(i, ...) do { if ((i) < WHY_MAX) snprintf(g_why[i], sizeof g_why[i], __VA_ARGS__); } while (0)
+static char (*g_why)[240];
+static int g_why_n;
+#define WHY(i, ...) do { if (g_why && (i) >= 0 && (i) < g_why_n) snprintf(g_why[i], sizeof g_why[i], __VA_ARGS__); } while (0)
 
 static bool path_is(const char *name, size_t len, const char *want)      /* the zip entry `name` equals the (lower-case) path `want`, ignoring case */
 {
@@ -246,7 +247,14 @@ bool eng_romzip_autosetup(const char *rom_dir, const char *exe_dir, const char *
     char done_paths[24][1024];
     int ndone = 0, found = 0;
     const int nd = search_dirs(exe_dir, dirs);
-    memset(g_why, 0, sizeof g_why);
+    free(g_why);
+    g_why = NULL;
+    g_why_n = 0;
+    if (n > 0) {
+        const int cap = n < WHY_MAX ? n : WHY_MAX;
+        g_why = calloc((size_t)cap, sizeof *g_why);
+        g_why_n = g_why ? cap : 0;
+    }
 
     /* every copy of every named zip, in every place (not only the first: a stale copy in roms/ must not hide a good one beside the game),
      * until the set is complete; then any other zip of the same set in those places (a clone's or a device's zip under another name,
@@ -281,20 +289,32 @@ bool eng_romzip_autosetup(const char *rom_dir, const char *exe_dir, const char *
                 printf("Unpacking ROMs from %s into %s ...\n", path, rom_dir);
                 char e2[300] = "";
                 if (eng_romzip_extract(path, rom_dir, roms, n, e2, sizeof e2) < 0) {
-                    if (!strncmp(e2, "cannot write", 12) || !strncmp(e2, "out of memory", 13)) { snprintf(err, errlen, "%s", e2); return false; }
+                    if (!strncmp(e2, "cannot write", 12) || !strncmp(e2, "out of memory", 13)) {
+                        snprintf(err, errlen, "%s", e2);
+                        free(g_why);
+                        g_why = NULL;
+                        g_why_n = 0;
+                        return false;
+                    }
                     printf("  (%s -- skipped)\n", e2);       /* a damaged or non-zip file: another copy may still do */
                 }
             }
         }
     const char *miss = eng_romzip_missing(rom_dir, roms, n);
-    if (!miss) { printf("ROMs unpacked.\n"); return true; }
+    if (!miss) {
+        printf("ROMs unpacked.\n");
+        free(g_why);
+        g_why = NULL;
+        g_why_n = 0;
+        return true;
+    }
     int mi = 0;
     while (mi < n && strcmp(roms[mi].name, miss)) mi++;
     if (!found) {
         char where[400] = "";
         for (int d = 0; d < nd; d++) { size_t l = strlen(where); snprintf(where + l, sizeof where - l, "%s%s", d ? ", " : "", dirs[d]); }
         snprintf(err, errlen, "no %s found (looked in: %s)", zips[0], where);
-    } else if (mi < WHY_MAX && g_why[mi][0]) snprintf(err, errlen, "%s cannot be used: %s", miss, g_why[mi]);
+    } else if (g_why && mi < g_why_n && g_why[mi][0]) snprintf(err, errlen, "%s cannot be used: %s", miss, g_why[mi]);
     else {
         char belongs[160] = "at the top level of the zip";
         if (roms[mi].zname) snprintf(belongs, sizeof belongs, "at %s, or anywhere else in the zip", roms[mi].zname);
@@ -308,5 +328,8 @@ bool eng_romzip_autosetup(const char *rom_dir, const char *exe_dir, const char *
 #endif
                  read_list, belongs);
     }
+    free(g_why);
+    g_why = NULL;
+    g_why_n = 0;
     return false;
 }

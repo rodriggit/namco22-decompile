@@ -1,0 +1,135 @@
+#ifndef ENG_WII_PORT_H
+#define ENG_WII_PORT_H
+
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
+
+/*
+ * Wii platform API for the Time Crisis port.
+ *
+ * The goal is to keep the game logic platform-agnostic: the game asks for
+ * hardware services through this interface, and the Wii backend implements them
+ * using devkitPro libraries (GX, AX, PAD/WPAD, SD access, etc.).
+ */
+
+typedef struct wii_platform_input {
+    /*
+     * Wii-native control layout:
+     *  - trigger  -> Wiimote B button (mandatory)
+     *  - coin     -> Wiimote +
+     *  - service  -> Wiimote -
+     *  - test     -> Wiimote 2
+     *  - pedal    -> Nunchuk Z or Wiimote 1
+     *  - Home leaves the game (wii_port_quit_requested), it is not a cabinet input
+     *  - offscreen -> pointer invalid / IR not detected
+     *
+     * The game receives normalized trigger/aim state and does not care which
+     * physical controller produced it.
+     */
+    bool coin;
+    bool service;
+    bool test;
+    bool trigger;
+    bool pedal;
+    bool offscreen;
+    /*
+     * Wii pointer coordinates are expressed in the host's native screen-space
+     * convention so the rest of the game does not need to know about IR
+     * resolution or Wii coordinate quirks. The backend keeps this translation
+     * internal to the platform layer.
+     */
+    uint16_t gun_x;
+    uint16_t gun_y;
+    int16_t stick_x;
+    int16_t stick_y;
+} wii_platform_input;
+
+enum wii_platform_frame_format {
+    WII_FRAME_FORMAT_INVALID = 0,
+    WII_FRAME_FORMAT_RGB565 = 1,
+    WII_FRAME_FORMAT_XRGB8888 = 2,
+};
+
+typedef struct wii_platform_frame {
+    /*
+     * Wii-native frame contract:
+     *  - width / height describe the logical frame size
+     *  - pitch is the byte stride in the submitted pixel buffer
+     *  - format identifies the native pixel representation.
+     *
+     * The host is expected to submit a framebuffer in a format compatible with
+     * the GX backend; the game logic itself remains unaware of the hardware.
+     */
+    uint32_t width;
+    uint32_t height;
+    uint32_t pitch;
+    uint32_t format;
+    void *pixels;
+} wii_platform_frame;
+
+typedef struct wii_platform_config {
+    uint32_t width;
+    uint32_t height;
+    uint32_t refresh_hz;
+    bool ir_enabled;
+    bool audio_enabled;
+} wii_platform_config;
+
+typedef struct wii_platform_audio {
+    /*
+     * Native Wii audio contract:
+     *  - sample_rate: target AX output rate
+     *  - channels: 1 or 2, typically stereo for the engine output
+     *  - bits_per_sample: 16-bit PCM is the expected default
+     */
+    uint32_t sample_rate;
+    uint16_t channels;
+    uint16_t bits_per_sample;
+} wii_platform_audio;
+
+void wii_port_init(void);
+void wii_port_shutdown(void);
+bool wii_port_is_ready(void);
+void wii_port_configure(const wii_platform_config *config);
+void wii_port_setup_audio(const wii_platform_audio *audio);
+void wii_port_poll_input(wii_platform_input *input);
+bool wii_port_quit_requested(void);     /* the player pressed Home: leave (the host returns false, the engine saves and exits) */
+void wii_port_rumble(bool on);          /* the Wiimote's motor: on or off, it has no strength */
+/* The range gun_x / gun_y span (the WPAD virtual resolution set at configure time). */
+void wii_port_ir_size(uint32_t *w, uint32_t *h);
+void wii_port_begin_frame(void);
+void wii_port_end_frame(const wii_platform_frame *frame);
+void wii_port_submit_frame(const wii_platform_frame *frame);
+void wii_port_show_status(const char *text);
+/* Interleaved L/R frames at wii_port_audio_rate() into the sound ring (sample_count = 2 x frames); what does not fit
+ * is dropped. Nothing plays before wii_port_audio_open. */
+void wii_port_submit_audio(const int16_t *samples, size_t sample_count);
+/* Start the ASND stereo voice that plays the ring; false (and a log line) if it cannot. */
+bool wii_port_audio_open(void);
+uint32_t wii_port_audio_rate(void);
+/* Frames waiting in the ring, and how many times it has run dry since the start. */
+uint32_t wii_port_audio_queued(void);
+uint32_t wii_port_audio_underruns(void);
+/* Since the start: frames handed to the ring, frames given to the voice, ASND's callbacks and the buffers it refused. */
+void wii_port_audio_counts(uint32_t *written, uint32_t *consumed, uint32_t *callbacks, uint32_t *busy);
+/* How many times the ASND voice had stopped and was started again. */
+uint32_t wii_port_audio_restarts(void);
+void *wii_port_mem2_alloc(size_t size, size_t align);
+/* From what MEM1's arena still has (the heap leaves it behind once it moves to MEM2); NULL if it does not fit. Never freed. */
+void *wii_port_mem1_alloc(size_t size, size_t align);
+/* Free MEM1/MEM2 arena bytes and the largest block malloc can still return, as one log line. */
+void wii_port_mem_report(char *buf, size_t n);
+
+/* GX presentation (engine/ss22_gx.c draws the frame into the EFB): true once the video and the GX FIFO are up. */
+bool wii_port_gx_ready(void);
+/* Copy the EFB to the next XFB, wait for the GPU, flip at the next vsync. */
+void wii_port_gx_present(void);
+/* One printf-style line appended to the boot log (sd:/wii_boot.log, at the card's root): the only log a player can read. */
+void wii_port_log(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+/* Microseconds since an arbitrary start (the PowerPC time base), for the per-stage timings in the log. */
+uint64_t wii_port_usec(void);
+bool wii_port_load_rom(const char *path, void *buffer, size_t size);
+const char *wii_port_storage_root(void);
+
+#endif

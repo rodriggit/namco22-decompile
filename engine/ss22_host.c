@@ -13,7 +13,9 @@
 #include <string.h>
 #include <time.h>
 #include <sys/stat.h>
+#ifndef __WII__
 #include <SDL2/SDL.h>
+#endif
 #include "eng_gl.h"
 #include "render_target.h"
 #include "ss22_gl.h"
@@ -28,6 +30,166 @@
 #include "eng_ffb.h"
 #include "gl_warn.h"
 
+
+#if defined(__WII__) || defined(__wii__)
+#include "../timecris/wii/port.h"
+
+static const ss22_host_game *game;
+static bool paused, shot_pending, headless_open, restart_req;
+static wii_platform_input wii_input;
+
+bool ss22_host_active(void) { return true; }
+bool ss22_host_restart_requested(void) { return false; }
+
+bool ss22_host_open(const ss22_host_game *g, int scale, bool fs)
+{
+    (void)scale; (void)fs;
+    game = g;
+    if (!wii_port_is_ready()) {
+        wii_port_init();
+    }
+    {
+        const wii_platform_config cfg = {
+            .width = 640,
+            .height = 480,
+            .refresh_hz = 60,
+            .ir_enabled = true,
+            .audio_enabled = true,
+        };
+        const wii_platform_audio audio = {
+            .sample_rate = 48000,                       /* the DSP's mixing rate: ASND plays the voice without resampling */
+            .channels = 2,
+            .bits_per_sample = 16,
+        };
+        wii_port_configure(&cfg);
+        wii_port_setup_audio(&audio);
+    }
+    memset(&wii_input, 0, sizeof(wii_input));
+    if (game && game->input_init) game->input_init();     /* the cabinet's controls (engine/ss22_input_wii.c), as the desktop host does */
+    if (game) {                                           /* the sound, as the desktop host does: the chip's output into the ASND ring */
+        eng_audio_set_gain(game->out_gain);
+        if (eng_audio_open() && game->snd_set_output) game->snd_set_output(true);
+    }
+    fprintf(stderr, "[WII] host stub initialized for %s\n", game ? game->title : "Time Crisis");
+    return true;
+}
+
+bool ss22_host_open_headless(void)
+{
+    headless_open = true;
+    return true;
+}
+
+bool ss22_host_pointer(float *nx, float *ny, bool *inside)
+{
+    wii_port_poll_input(&wii_input);
+
+    if (wii_input.offscreen) {
+        if (nx) *nx = 0.5f;
+        if (ny) *ny = 0.5f;
+        if (inside) *inside = false;
+        return true;
+    }
+
+    {
+        uint32_t ir_w, ir_h;
+        wii_port_ir_size(&ir_w, &ir_h);
+        if (nx) *nx = (float)wii_input.gun_x / (float)ir_w;
+        if (ny) *ny = (float)wii_input.gun_y / (float)ir_h;
+    }
+    if (inside) *inside = true;
+    return true;
+}
+
+/* where a frame's time goes, into the boot log every 120 emulated frames: the emulation between two host frames (68K, DSP,
+ * sound MCU, the display-list walk), the draw (engine/ss22_gx.c) and the present (EFB copy, GPU finish, wait for vsync) */
+static uint64_t last_end, acc_emu, acc_draw, acc_present;
+static unsigned frames, frames_shown;
+static void frame_stats(void);
+
+/* FRAMESKIP. The board runs every frame; while the game is behind the arcade's clock (59.906 Hz) a frame's picture is
+ * neither prepared nor drawn -- at most FRAMESKIP_MAX frames in a row -- which saves the geometry stage, the draw and the
+ * wait for the screen. The lag that counts is capped at 3 frames, so a long slow stretch is not paid back afterwards by
+ * running faster than the arcade. 1 measured best in gameplay: about 36-39 fps of game and 18-20 on screen, against about
+ * 28 of both without (2 shows too few frames for what it gains). */
+#define FRAME_US      16693u
+#define FRAMESKIP_MAX 1
+bool ss22_host_skip_frame(void)
+{
+    static uint64_t due;                     /* when the frame ending now is due, at the arcade's speed */
+    static int run;
+    const uint64_t now = wii_port_usec();
+    due = due ? due + FRAME_US : now;
+    if (due + 3u * FRAME_US < now) due = now - 3u * FRAME_US;
+    if (now <= due || run >= FRAMESKIP_MAX) { run = 0; return false; }
+    run++;
+    if (last_end) acc_emu += now - last_end;
+    if (game && game->input_update) game->input_update();   /* the Wiimote is read every frame, drawn or not */
+    last_end = wii_port_usec();
+    frame_stats();
+    return true;
+}
+
+bool ss22_host_frame(void)
+{
+    const uint64_t t0 = wii_port_usec();
+    if (last_end) acc_emu += t0 - last_end;
+
+    /* ss22_run.c leaves the cabinet's inputs to the host while one is active: read the Wiimote and tell the MCU, once per frame. */
+    if (game && game->input_update) game->input_update();
+    if (wii_port_quit_requested()) {         /* Home or a power button: false makes ss22_run.c save the EEPROM, close everything and
+                                              * exit(0) -- back to the Homebrew Channel -- or power off (timecris/wii/port.c) */
+        wii_port_log("[WII-HOST] leaving (Home or a power button)");
+        return false;
+    }
+    ss22_draw(640, 480);
+    const uint64_t t1 = wii_port_usec();
+    wii_port_gx_present();
+    last_end = wii_port_usec();
+    acc_draw += t1 - t0;
+    acc_present += last_end - t1;
+    frames_shown++;
+    frame_stats();
+    return true;
+}
+
+static void frame_stats(void)
+{
+    if (++frames % 120u == 0u) {
+        const double k = 1.0 / (120.0 * 1000.0);
+        static uint32_t ur_seen, rs_seen, wr_seen, co_seen, cb_seen, bz_seen;
+        const uint32_t ur = wii_port_audio_underruns(), rs = wii_port_audio_restarts();
+        uint32_t wr, co, cb, bz;
+        wii_port_audio_counts(&wr, &co, &cb, &bz);
+        const double hz = (double)wii_port_audio_rate(), real_s = (acc_emu + acc_draw + acc_present) / 1e6;
+        wii_port_log("[WII-HOST] frame %u: ms per frame emu %.1f draw %.1f present %.1f = %.1f (%.1f fps) | sound: %u ms queued, "
+                     "ran dry %u times, voice restarted %u times, made %.1f ms a frame (16.7 at full speed), played %.0f ms a second "
+                     "(ASND asked %.0f times a second, refused %.0f)",
+                     frames, acc_emu * k, acc_draw * k, acc_present * k, (acc_emu + acc_draw + acc_present) * k,
+                     (acc_emu + acc_draw + acc_present) ? 120.0 * 1e6 / (double)(acc_emu + acc_draw + acc_present) : 0.0,
+                     (unsigned)(wii_port_audio_queued() * 1000u / wii_port_audio_rate()), (unsigned)(ur - ur_seen),
+                     (unsigned)(rs - rs_seen), (wr - wr_seen) * 1000.0 / hz / 120.0,
+                     real_s > 0 ? (co - co_seen) * 1000.0 / hz / real_s : 0.0,
+                     real_s > 0 ? (cb - cb_seen) / real_s : 0.0, real_s > 0 ? (bz - bz_seen) / real_s : 0.0);
+        ur_seen = ur; rs_seen = rs; wr_seen = wr; co_seen = co; cb_seen = cb; bz_seen = bz;
+        wii_port_log("[WII-HOST] frameskip: %u of 120 frames shown (%.1f fps on screen)", frames_shown,
+                     real_s > 0 ? frames_shown / real_s : 0.0);
+        acc_emu = acc_draw = acc_present = 0;
+        frames_shown = 0;
+    }
+}
+
+void ss22_host_shot(const char *path)
+{
+    (void)path;
+}
+
+void ss22_host_close(void)
+{
+    wii_port_shutdown();
+}
+
+#else
 
 static const ss22_host_game *game;
 static SDL_Window *win;
@@ -311,3 +473,4 @@ void ss22_host_close(void)
     if (win) SDL_DestroyWindow(win);
     win = NULL; glc = NULL;
 }
+#endif

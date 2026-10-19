@@ -21,6 +21,7 @@ typedef struct {
     int         chips;                       /* per plane (3 or 4) */
     bool      (*xlat)(c71_t *d, int pc);     /* gen/<game>_c25.c: the master program translated to C */
     uint16_t    spin_pc, spin_op;            /* optional busy-wait the engine fast-forwards (engine/c25/c25.h); 0 = none */
+    bool (*const *xlat_pages)(c71_t *d, int pc);   /* optional: gen/<game>_c25.c's <xlat>_pages, the dispatch by page (NULL = xlat only) */
 } ss22_dsp_cfg;
 
 /* the sound board: the S22-BIOS + sound program, the wave ROMs, what the MCU reads of the cabinet */
@@ -136,6 +137,7 @@ uint16_t ss22_snd_outputs(void);         /* the MCU's output latches (lamps, mot
 void ss22_snd_debug(char *buf, int n);
 
 bool ss22_video_init(const char *rom_dir);
+void ss22_video_skip(void);              /* instead of ss22_video_prepare on a frame that is not drawn: only the frame rule's count */
 void ss22_video_prepare(void);           /* latch the board's video state and walk polygon RAM: once per frame */
 bool ss22_video_load_dump(const char *dir, int frame);   /* MAME's state (tools/mame/vid_dump.lua) into g_ss22, for --render-dump */
 void ss22_video_pdp_begin(void);         /* master DSP port 2 read (engine/frame_rule.h) */

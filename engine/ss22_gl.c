@@ -9,6 +9,531 @@
  *   4. the text tilemap over that
  *   5. the mixer's gamma tables over the whole frame
  */
+#include "ss22_gl.h"
+
+#if defined(__WII__) || defined(__wii__)
+
+#include <math.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "eng.h"
+#include "fog_hw.h"
+#include "geo_hw.h"
+#include "slave_list.h"
+#include "sprite_hw.h"
+#include "text_hw.h"
+
+#define WII_SW_W 640
+#define WII_SW_H 480
+
+static text_state wii_tst;
+static sprite_state wii_sst;
+static bool wii_have_text;
+static bool wii_have_spr;
+static uint16_t *wii_fb565;
+static uint8_t *wii_rgba;
+static uint8_t *wii_text_rgba;
+static uint8_t *wii_spr_rgba;
+static uint8_t *wii_spr_prio;
+static geo_quad *wii_qbuf;
+static int wii_qn;
+static int wii_qcap;
+static int wii_qorder;
+static uint32_t (*wii_poly_word_cb)(int index);
+static int wii_quads;
+static int wii_sprites;
+static unsigned wii_dbg_frame;
+static unsigned wii_dbg_black_streak;
+static bool wii_frame_visible;
+
+typedef struct {
+    float x;
+    float y;
+    float shade;
+    float fog_alpha;
+} wii_sw_vert;
+
+static bool wii_alloc_buffers(void)
+{
+    if (!wii_fb565) {
+        wii_fb565 = (uint16_t *)malloc((size_t)WII_SW_W * WII_SW_H * sizeof(uint16_t));
+    }
+    if (!wii_rgba) {
+        wii_rgba = (uint8_t *)malloc((size_t)WII_SW_W * WII_SW_H * 4u);
+    }
+    if (!wii_text_rgba) {
+        wii_text_rgba = (uint8_t *)malloc((size_t)WII_SW_W * WII_SW_H * 4u);
+    }
+    if (!wii_spr_rgba) {
+        wii_spr_rgba = (uint8_t *)malloc((size_t)WII_SW_W * WII_SW_H * 4u);
+    }
+    if (!wii_spr_prio) {
+        wii_spr_prio = (uint8_t *)malloc((size_t)WII_SW_W * WII_SW_H);
+    }
+    return wii_fb565 && wii_rgba && wii_text_rgba && wii_spr_rgba && wii_spr_prio;
+}
+
+static inline void wii_alpha_blend_over(uint8_t *dst_rgb, const uint8_t *src_rgba)
+{
+    const unsigned a = src_rgba[3];
+    if (a == 0) {
+        return;
+    }
+    if (a == 255) {
+        dst_rgb[0] = src_rgba[0];
+        dst_rgb[1] = src_rgba[1];
+        dst_rgb[2] = src_rgba[2];
+        return;
+    }
+
+    const unsigned ia = 255u - a;
+    dst_rgb[0] = (uint8_t)((src_rgba[0] * a + dst_rgb[0] * ia + 127u) / 255u);
+    dst_rgb[1] = (uint8_t)((src_rgba[1] * a + dst_rgb[1] * ia + 127u) / 255u);
+    dst_rgb[2] = (uint8_t)((src_rgba[2] * a + dst_rgb[2] * ia + 127u) / 255u);
+}
+
+static inline uint16_t wii_rgb565(uint8_t r, uint8_t g, uint8_t b)
+{
+    return (uint16_t)(((uint16_t)(r >> 3) << 11) | ((uint16_t)(g >> 2) << 5) | (uint16_t)(b >> 3));
+}
+
+static uint32_t wii_poly_word(int index)
+{
+    if (!wii_poly_word_cb) {
+        return 0;
+    }
+    return wii_poly_word_cb(index);
+}
+
+static void wii_push_quad(const geo_quad *q, void *user)
+{
+    (void)user;
+    if (wii_qn == wii_qcap) {
+        const int nc = wii_qcap ? wii_qcap * 2 : 4096;
+        geo_quad *nb = (geo_quad *)realloc(wii_qbuf, (size_t)nc * sizeof(*wii_qbuf));
+        if (!nb) {
+            return;
+        }
+        wii_qbuf = nb;
+        wii_qcap = nc;
+    }
+    wii_qbuf[wii_qn] = *q;
+    wii_qbuf[wii_qn].order = wii_qorder++;
+    wii_qn++;
+}
+
+static int wii_quad_cmp(const void *a, const void *b)
+{
+    const geo_quad *qa = (const geo_quad *)a;
+    const geo_quad *qb = (const geo_quad *)b;
+    if (qa->zsort != qb->zsort) {
+        return qa->zsort > qb->zsort ? -1 : 1;
+    }
+    return qa->order > qb->order ? -1 : (qa->order < qb->order ? 1 : 0);
+}
+
+static inline float wii_edge(float ax, float ay, float bx, float by, float px, float py)
+{
+    return (px - ax) * (by - ay) - (py - ay) * (bx - ax);
+}
+
+static inline uint8_t wii_u8_clamp(int v)
+{
+    if (v < 0) return 0;
+    if (v > 255) return 255;
+    return (uint8_t)v;
+}
+
+static void wii_quad_base_rgb(const geo_quad *q, uint8_t rgb[3])
+{
+    if (!direct_palette_loaded) {
+        rgb[0] = 160;
+        rgb[1] = 160;
+        rgb[2] = 160;
+        return;
+    }
+
+    const int group = (int)((q->color >> 8) & 0x7F);
+    int best_luma = -1;
+    uint8_t best_r = 160, best_g = 160, best_b = 160;
+
+    /* Flat-color Wii fallback: pick a visible representative color from the
+     * palette group since true per-pixel texturing is not wired yet. */
+    static const uint8_t probes[] = { 0x20, 0x40, 0x60, 0x80, 0xA0, 0xC0, 0xE0, 0xFF };
+    for (size_t i = 0; i < sizeof(probes) / sizeof(probes[0]); ++i) {
+        const uint8_t r = direct_palette[group][probes[i]][0];
+        const uint8_t g = direct_palette[group][probes[i]][1];
+        const uint8_t b = direct_palette[group][probes[i]][2];
+        const int luma = (int)r * 30 + (int)g * 59 + (int)b * 11;
+        if (luma > best_luma) {
+            best_luma = luma;
+            best_r = r;
+            best_g = g;
+            best_b = b;
+        }
+    }
+
+    rgb[0] = best_r;
+    rgb[1] = best_g;
+    rgb[2] = best_b;
+}
+
+static void wii_raster_tri(const wii_sw_vert *a,
+                           const wii_sw_vert *b,
+                           const wii_sw_vert *c,
+                           const uint8_t base_rgb[3],
+                           int fog_on,
+                           const uint8_t fog_rgb[3],
+                           int poly_fade_on,
+                           const uint8_t poly_fade_rgb[3])
+{
+    wii_sw_vert v0 = *a;
+    wii_sw_vert v1 = *b;
+    wii_sw_vert v2 = *c;
+
+    float area = wii_edge(v0.x, v0.y, v1.x, v1.y, v2.x, v2.y);
+    if (area == 0.0f) {
+        return;
+    }
+
+    if (area < 0.0f) {
+        wii_sw_vert tmp = v1;
+        v1 = v2;
+        v2 = tmp;
+        area = -area;
+    }
+
+    int minx = (int)floorf(fminf(v0.x, fminf(v1.x, v2.x)));
+    int miny = (int)floorf(fminf(v0.y, fminf(v1.y, v2.y)));
+    int maxx = (int)ceilf(fmaxf(v0.x, fmaxf(v1.x, v2.x)));
+    int maxy = (int)ceilf(fmaxf(v0.y, fmaxf(v1.y, v2.y)));
+
+    if (minx < 0) minx = 0;
+    if (miny < 0) miny = 0;
+    if (maxx >= WII_SW_W) maxx = WII_SW_W - 1;
+    if (maxy >= WII_SW_H) maxy = WII_SW_H - 1;
+    if (minx > maxx || miny > maxy) {
+        return;
+    }
+
+    const float inv_area = 1.0f / area;
+    for (int y = miny; y <= maxy; ++y) {
+        for (int x = minx; x <= maxx; ++x) {
+            const float px = (float)x + 0.5f;
+            const float py = (float)y + 0.5f;
+
+            const float w0 = wii_edge(v1.x, v1.y, v2.x, v2.y, px, py);
+            const float w1 = wii_edge(v2.x, v2.y, v0.x, v0.y, px, py);
+            const float w2 = wii_edge(v0.x, v0.y, v1.x, v1.y, px, py);
+            if (w0 < 0.0f || w1 < 0.0f || w2 < 0.0f) {
+                continue;
+            }
+
+            const float l0 = w0 * inv_area;
+            const float l1 = w1 * inv_area;
+            const float l2 = w2 * inv_area;
+
+            float shade = l0 * v0.shade + l1 * v1.shade + l2 * v2.shade;
+            if (shade < 0.0f) shade = 0.0f;
+            if (shade > 4.0f) shade = 4.0f;
+
+            int r = (int)(base_rgb[0] * shade);
+            int g = (int)(base_rgb[1] * shade);
+            int bch = (int)(base_rgb[2] * shade);
+            r = r > 255 ? 255 : r;
+            g = g > 255 ? 255 : g;
+            bch = bch > 255 ? 255 : bch;
+
+            if (fog_on) {
+                float a_f = l0 * v0.fog_alpha + l1 * v1.fog_alpha + l2 * v2.fog_alpha;
+                if (a_f < 0.0f) a_f = 0.0f;
+                if (a_f > 255.0f) a_f = 255.0f;
+                const int af = (int)a_f;
+                const int ia = 255 - af;
+                r = (r * af + fog_rgb[0] * ia + 127) / 255;
+                g = (g * af + fog_rgb[1] * ia + 127) / 255;
+                bch = (bch * af + fog_rgb[2] * ia + 127) / 255;
+            }
+
+            if (poly_fade_on) {
+                r = (r * poly_fade_rgb[0]) / 255;
+                g = (g * poly_fade_rgb[1]) / 255;
+                bch = (bch * poly_fade_rgb[2]) / 255;
+            }
+
+            const size_t o = ((size_t)y * WII_SW_W + (size_t)x) * 4u;
+            wii_rgba[o + 0] = wii_u8_clamp(r);
+            wii_rgba[o + 1] = wii_u8_clamp(g);
+            wii_rgba[o + 2] = wii_u8_clamp(bch);
+            wii_rgba[o + 3] = 255;
+        }
+    }
+}
+
+static void wii_draw_quads(void)
+{
+    const uint8_t pf_rgb[3] = {
+        g_fog_valid ? g_fog.poly_fade[0] : 255,
+        g_fog_valid ? g_fog.poly_fade[1] : 255,
+        g_fog_valid ? g_fog.poly_fade[2] : 255
+    };
+
+    for (int qi = 0; qi < wii_qn; ++qi) {
+        const geo_quad *q = &wii_qbuf[qi];
+        const geo_vert *v = q->ndv >= 3 ? q->dv : q->rv;
+        int n = q->ndv >= 3 ? q->ndv : q->nrv;
+        if (n < 3) {
+            continue;
+        }
+        if (n > 10) {
+            n = 10;
+        }
+
+        uint8_t base_rgb[3];
+        wii_quad_base_rgb(q, base_rgb);
+
+        const int fog_enabled = g_fog_valid && !(q->cz_adjust & 0x800000);
+        const uint8_t fog_rgb[3] = { g_fog.fog_rgb[0], g_fog.fog_rgb[1], g_fog.fog_rgb[2] };
+        const uint8_t *fog_tab = NULL;
+        int fog_sdelta = 0;
+        const int has_quad_fog = fog_enabled && fog_quad(q->color, q->cz_type, &fog_tab, &fog_sdelta);
+
+        wii_sw_vert sv[10];
+        for (int i = 0; i < n; ++i) {
+            sv[i].x = (float)v[i].sx16 / 16.0f;
+            sv[i].y = (float)v[i].sy16 / 16.0f;
+            sv[i].shade = (float)v[i].bri / 64.0f;
+            if (sv[i].shade < 0.0f) sv[i].shade = 0.0f;
+
+            if (has_quad_fog) {
+                sv[i].fog_alpha = (float)fog_alpha_for_z(fog_tab, fog_sdelta, v[i].z);
+            } else {
+                sv[i].fog_alpha = 255.0f;
+            }
+        }
+
+        for (int i = 1; i + 1 < n; ++i) {
+            wii_raster_tri(&sv[0], &sv[i], &sv[i + 1],
+                           base_rgb,
+                           has_quad_fog,
+                           fog_rgb,
+                           g_fog_valid && g_fog.poly_fade_enabled,
+                           pf_rgb);
+        }
+    }
+}
+
+static void wii_finalize_rgba_to_rgb565(void)
+{
+    const int do_fade = g_fog_valid && (g_fog.mixer_flags & 1) && g_fog.screen_fade_factor;
+    const unsigned ff = do_fade ? g_fog.screen_fade_factor : 0u;
+
+    for (int y = 0; y < WII_SW_H; ++y) {
+        for (int x = 0; x < WII_SW_W; ++x) {
+            const size_t i = ((size_t)y * WII_SW_W + (size_t)x);
+            const size_t o = i * 4u;
+            uint8_t r = wii_rgba[o + 0];
+            uint8_t g = wii_rgba[o + 1];
+            uint8_t b = wii_rgba[o + 2];
+
+            if (do_fade) {
+                r = (uint8_t)((r * (255u - ff) + g_fog.screen_fade[0] * ff + 127u) / 255u);
+                g = (uint8_t)((g * (255u - ff) + g_fog.screen_fade[1] * ff + 127u) / 255u);
+                b = (uint8_t)((b * (255u - ff) + g_fog.screen_fade[2] * ff + 127u) / 255u);
+            }
+
+            fog_apply_gamma(&r, &g, &b);
+            wii_fb565[i] = wii_rgb565(r, g, b);
+        }
+    }
+}
+
+void ss22_gl_set_hud(const eng_hud_cfg *h)
+{
+    (void)h;
+}
+
+void ss22_gl_set_gun_flash(bool on)
+{
+    (void)on;
+}
+
+void ss22_prepare(const ss22_regs *r)
+{
+    if (!r) {
+        wii_have_text = false;
+        wii_have_spr = false;
+        wii_quads = 0;
+        wii_sprites = 0;
+        return;
+    }
+
+    fog_load_regs(r->mixer, r->czattr, r->czram);
+    eng_palette_from_planar(r->pal, 0x8000);
+    text_set_spot(r->spotram, r->spot_enabled);
+    wii_have_text = text_load_regs(&wii_tst, r->cgram, r->pal, r->tilemapattr) != 0;
+    wii_have_spr = sprite_load_regs(&wii_sst, r->spriteram, r->spriteram_size,
+                                    r->vics, r->vics_size, r->vics_ctl, r->pal) != 0;
+
+    wii_qn = 0;
+    wii_qorder = 0;
+    wii_poly_word_cb = r->poly_word;
+    /* Wii first-pass: force list walking so visible geometry appears even
+     * while frame-rule timing is still being tuned for this backend. */
+    if (wii_poly_word_cb) {
+        const eng_list_cfg cfg = { ENG_LIST_HEAD_SS22, 0, NULL, NULL, NULL, NULL };
+        (void)eng_walk_list(wii_poly_word, &cfg, wii_push_quad, NULL);
+        if (wii_qn > 1) {
+            qsort(wii_qbuf, (size_t)wii_qn, sizeof(*wii_qbuf), wii_quad_cmp);
+        }
+    }
+
+    wii_quads = wii_qn;
+    wii_sprites = 0;
+    if (wii_have_spr) {
+        sprite_item items[1024];
+        wii_sprites = sprite_collect(&wii_sst, &g_fog, items, (int)(sizeof(items) / sizeof(items[0])));
+    }
+}
+
+void ss22_draw(int vw, int vh)
+{
+    (void)vw;
+    (void)vh;
+
+    if (!wii_alloc_buffers()) {
+        return;
+    }
+
+    uint8_t br = g_fog_valid ? g_fog.bg[0] : 0;
+    uint8_t bg = g_fog_valid ? g_fog.bg[1] : 0;
+    uint8_t bb = g_fog_valid ? g_fog.bg[2] : 0;
+
+    for (size_t i = 0; i < (size_t)WII_SW_W * WII_SW_H; ++i) {
+        const size_t o = i * 4u;
+        wii_rgba[o + 0] = br;
+        wii_rgba[o + 1] = bg;
+        wii_rgba[o + 2] = bb;
+        wii_rgba[o + 3] = 255;
+    }
+
+    if (wii_qn > 0) {
+        wii_draw_quads();
+    }
+
+    if (wii_have_spr) {
+        sprite_render_ex(&wii_sst, &g_fog, wii_spr_rgba, wii_spr_prio, 1);
+        for (size_t i = 0; i < (size_t)WII_SW_W * WII_SW_H; ++i) {
+            wii_alpha_blend_over(&wii_rgba[i * 4u], &wii_spr_rgba[i * 4u]);
+        }
+    }
+
+    if (wii_have_text) {
+        text_render(&wii_tst, &g_fog, wii_text_rgba, 0);
+        for (size_t i = 0; i < (size_t)WII_SW_W * WII_SW_H; ++i) {
+            wii_alpha_blend_over(&wii_rgba[i * 4u], &wii_text_rgba[i * 4u]);
+        }
+    }
+
+    {
+        size_t lit = 0;
+        const size_t total = (size_t)WII_SW_W * WII_SW_H;
+        for (size_t i = 0; i < total; ++i) {
+            const size_t o = i * 4u;
+            if ((wii_rgba[o + 0] | wii_rgba[o + 1] | wii_rgba[o + 2]) != 0) {
+                lit++;
+            }
+        }
+
+        if (lit < total / 100u) {
+            wii_dbg_black_streak++;
+#if !defined(__WII__) && !defined(__wii__)
+            for (int y = 0; y < WII_SW_H; ++y) {
+                for (int x = 0; x < WII_SW_W; ++x) {
+                    const int band = ((x + (int)(wii_dbg_frame * 2u)) >> 5) & 3;
+                    const size_t o = ((size_t)y * WII_SW_W + (size_t)x) * 4u;
+                    wii_rgba[o + 0] = (uint8_t)(band == 0 ? 255 : (band == 1 ? 64 : (band == 2 ? 16 : 200)));
+                    wii_rgba[o + 1] = (uint8_t)(band == 0 ? 32  : (band == 1 ? 255 : (band == 2 ? 96 : 32)));
+                    wii_rgba[o + 2] = (uint8_t)(band == 0 ? 32  : (band == 1 ? 32  : (band == 2 ? 255 : 200)));
+                    wii_rgba[o + 3] = 255;
+                }
+            }
+#endif
+        } else {
+            wii_dbg_black_streak = 0;
+        }
+        wii_frame_visible = lit >= total / 20u;
+
+        if ((wii_dbg_frame % 120u) == 0u) {
+            fprintf(stderr,
+                    "[WII-GL] frame=%u quads=%d sprites=%d lit=%u black_streak=%u\n",
+                    wii_dbg_frame,
+                    wii_quads,
+                    wii_sprites,
+                    (unsigned)lit,
+                    wii_dbg_black_streak);
+        }
+    }
+
+    wii_finalize_rgba_to_rgb565();
+    wii_dbg_frame++;
+}
+
+int ss22_quads(void)
+{
+    return wii_quads;
+}
+
+int ss22_sprites(void)
+{
+    return wii_sprites;
+}
+
+const uint16_t *ss22_wii_frame_rgb565(int *w, int *h)
+{
+    if (!wii_alloc_buffers()) {
+        if (w) *w = WII_SW_W;
+        if (h) *h = WII_SW_H;
+        return NULL;
+    }
+    if (w) *w = WII_SW_W;
+    if (h) *h = WII_SW_H;
+    return wii_fb565;
+}
+
+bool ss22_wii_frame_has_content(void)
+{
+    return wii_quads > 0 || wii_sprites > 0 || wii_have_text;
+}
+
+bool ss22_wii_frame_is_visible(void)
+{
+    return wii_frame_visible;
+}
+
+void eng_gl_context_attributes(void)
+{
+}
+
+bool eng_gl_open_headless(int w, int h)
+{
+    (void)w;
+    (void)h;
+    return false;
+}
+
+bool eng_gl_write_ppm(const char *path, int vw, int vh)
+{
+    (void)path;
+    (void)vw;
+    (void)vh;
+    return false;
+}
+
+#else
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -23,7 +548,6 @@
 #include "fog_hw.h"
 #include "text_hw.h"
 #include "sprite_hw.h"
-#include "ss22_gl.h"
 #include "hud_edges.h"
 
 #define NW ENG_SCREEN_W
@@ -207,6 +731,13 @@ static void ss22_qhist_report(void)
     for (int i = 0; i < 24; i++) fprintf(stderr, "[QHIST] %5d..%5d  %5d %5d\n", i * 128 - 1024, i * 128 - 897, lo[i], hi[i]);
 }
 int ss22_sprites(void) { return ni; }
+
+const uint16_t *ss22_wii_frame_rgb565(int *w, int *h)
+{
+    if (w) *w = 0;
+    if (h) *h = 0;
+    return NULL;
+}
 
 /* ------------------------------------------------------------------ drawing */
 static bool    gl_ready;
@@ -584,3 +1115,5 @@ bool eng_gl_write_ppm(const char *path, int vw, int vh)
     free(px);
     return true;
 }
+
+#endif

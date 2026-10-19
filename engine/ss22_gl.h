@@ -46,6 +46,12 @@ void ss22_draw(int vw, int vh);
 int  ss22_quads(void);                       /* quads in the prepared frame */
 int  ss22_sprites(void);                     /* sprites in the prepared frame */
 
+/* Wii-only software composition output (RGB565, 640x480 logical source).
+ * Non-Wii builds return NULL and leave dimensions unchanged. */
+const uint16_t *ss22_wii_frame_rgb565(int *w, int *h);
+bool ss22_wii_frame_has_content(void);
+bool ss22_wii_frame_is_visible(void);
+
 /* An OpenGL 2.1 compatibility context, the way the engine wants it (alpha channel, double buffered). */
 void eng_gl_context_attributes(void);
 /* An offscreen w x h context for headless runs (SDL's offscreen driver); false if there is no GL at all. */

@@ -6,6 +6,37 @@
 #include <stdlib.h>
 #include <string.h>
 #include "eng.h"
+#if defined(__WII__) || defined(__wii__)
+#include "../timecris/wii/port.h"
+#endif
+
+#if defined(__WII__) || defined(__wii__)
+static void *big_arena[32];                               /* the blocks taken from the arenas: eng_free_big keeps them */
+static int   big_n;
+void *eng_alloc_big(size_t n, int zero)
+{
+    void *p = NULL;
+    if (big_n < (int)(sizeof big_arena / sizeof big_arena[0])) {
+        p = wii_port_mem2_alloc(n, 32);
+        if (!p) p = wii_port_mem1_alloc(n, 32);
+    }
+    if (p) {
+        big_arena[big_n++] = p;
+        if (zero) memset(p, 0, n);
+        return p;
+    }
+    return zero ? calloc(1, n) : malloc(n);
+}
+void eng_free_big(void *p)
+{
+    if (!p) return;
+    for (int i = 0; i < big_n; i++) if (big_arena[i] == p) return;
+    free(p);
+}
+#else
+void *eng_alloc_big(size_t n, int zero) { return zero ? calloc(1, n) : malloc(n); }
+void  eng_free_big(void *p) { free(p); }
+#endif
 
 uint8_t *g_texture_data = NULL;
 uint8_t *g_texture_tilemap = NULL;
@@ -48,8 +79,8 @@ static int load_upto(const char *dir, const char *name, uint8_t *dst, size_t n)
 int eng_load_texture_roms(const char *dir, const char *const cg[8],
                           const char *ccrl, const char *ccrh)
 {
-    if (!g_texture_data) g_texture_data = calloc(TEXTURE_TOTAL_SIZE, 1);
-    if (!g_texture_tilemap) g_texture_tilemap = calloc(TEXTUREMAP_SIZE, 1);
+    if (!g_texture_data) g_texture_data = eng_alloc_big(TEXTURE_TOTAL_SIZE, 1);
+    if (!g_texture_tilemap) g_texture_tilemap = eng_alloc_big(TEXTUREMAP_SIZE, 1);
     if (!g_texture_data || !g_texture_tilemap) return 0;
     int ok = 1;
     for (int i = 0; i < 8; i++)

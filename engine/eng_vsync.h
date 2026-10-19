@@ -33,9 +33,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifndef __WII__
 #include <SDL2/SDL.h>
+#endif
 #include "eng_gl.h"                                 /* <GL/gl.h>, with <windows.h> first on Windows */
 
+#ifndef __WII__
 #define ENG_FRAME_NS 16693000ull                    /* 1 / 59.906 Hz, 25.6 MHz / 814 / 525 */
 
 static const int eng_vsync_rates[] = { 0, 24, 30, 50, 60, 75, 90, 120, 144, 165, 240 };   /* 0 = Auto, the default (the display's rate; 60 on a 60 Hz display) */
@@ -283,4 +286,5 @@ static inline void eng_vsync_after_frame(eng_vsync *v, SDL_Window *win)
 
 /* a frame that always swapped (callers that do not ask eng_vsync_show) */
 static inline void eng_vsync_after_swap(eng_vsync *v) { v->shown = true; eng_vsync_after_frame(v, NULL); }
+#endif
 #endif
